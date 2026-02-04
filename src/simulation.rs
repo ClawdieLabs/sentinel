@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use solana_sdk::transaction::Transaction;
 use std::env;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimulationResult {
     pub logs: Vec<String>,
     pub units_consumed: Option<u64>,
@@ -49,7 +49,7 @@ impl HeliusSimulator {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReturnData {
     pub data: String,
     pub encoding: String,

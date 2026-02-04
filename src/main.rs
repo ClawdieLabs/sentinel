@@ -10,15 +10,18 @@ use std::sync::Arc;
 
 mod policy;
 mod simulation;
+mod logger;
 
 use policy::{Policy, PolicyEngine};
 use simulation::{HeliusSimulator, Simulate, SimulationResult};
+use logger::{AuditLogger, AuditEntry, Decision, current_timestamp};
 use tokio::signal;
 
 #[derive(Clone)]
 struct AppState {
     policy_engine: Arc<PolicyEngine>,
     simulator: Arc<HeliusSimulator>,
+    logger: Arc<AuditLogger>,
 }
 
 #[derive(serde::Deserialize)]
@@ -61,14 +64,26 @@ async fn simulate(
         },
     )?;
 
-    state.policy_engine.check_transaction(&tx).map_err(|err| {
-        (
+    let signature = tx.signatures.get(0).map(|s| s.to_string());
+
+    let policy_check = state.policy_engine.check_transaction(&tx);
+    
+    if let Err(err) = &policy_check {
+        let entry = AuditEntry {
+            timestamp: current_timestamp(),
+            transaction_signature: signature.clone(),
+            decision: Decision::Blocked(err.clone()),
+            simulation_result: None,
+        };
+        let _ = state.logger.log(entry); // Best effort logging
+
+        return Err((
             StatusCode::FORBIDDEN,
             Json(ErrorResponse {
-                error: err,
+                error: err.clone(),
             }),
-        )
-    })?;
+        ));
+    }
 
     let simulator = state.simulator.clone();
     let result = tokio::task::spawn_blocking(move || simulator.simulate_transaction(&tx))
@@ -90,6 +105,14 @@ async fn simulate(
             )
         })?;
 
+    let entry = AuditEntry {
+        timestamp: current_timestamp(),
+        transaction_signature: signature,
+        decision: Decision::Allowed,
+        simulation_result: Some(result.clone()),
+    };
+    let _ = state.logger.log(entry);
+
     Ok(Json(result))
 }
 
@@ -104,9 +127,12 @@ async fn main() {
     let policy: Policy = toml::from_str(&config_text).expect("parse config.toml");
     let policy_engine = Arc::new(PolicyEngine::new(policy));
     let simulator = Arc::new(HeliusSimulator::new().expect("create Helius simulator"));
+    let logger = Arc::new(AuditLogger::new("audit_log.sled").expect("create audit logger"));
+    
     let app_state = AppState {
         policy_engine,
         simulator,
+        logger,
     };
 
     let app = Router::new()
