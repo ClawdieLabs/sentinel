@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use base64::Engine as _;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
@@ -13,7 +13,7 @@ pub struct SimulationResult {
     pub error: Option<serde_json::Value>,
 }
 
-pub trait Simulate {
+pub trait Simulate: Send + Sync {
     fn simulate_transaction(&self, tx: &Transaction) -> Result<SimulationResult>;
 }
 

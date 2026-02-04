@@ -3386,9 +3386,11 @@ dependencies = [
  "sled",
  "solana-client",
  "solana-sdk",
+ "tempfile",
  "thiserror",
  "tokio",
  "toml 0.8.23",
+ "tower",
 ]
 
 [[package]]
