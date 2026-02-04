@@ -10,7 +10,26 @@ pub struct Policy {
 }
 
 impl Policy {
-    pub fn check_transaction(&self, _tx: &Transaction) -> Result<(), String> {
+    pub fn check_transaction(&self, tx: &Transaction) -> Result<(), String> {
+        for instruction in &tx.message.instructions {
+            let program_id_index = usize::from(instruction.program_id_index);
+            let program_id = tx
+                .message
+                .account_keys
+                .get(program_id_index)
+                .ok_or_else(|| format!("Invalid program_id_index: {}", program_id_index))?;
+            let program_id_str = program_id.to_string();
+
+            if !self.allowed_programs.is_empty()
+                && !self
+                    .allowed_programs
+                    .iter()
+                    .any(|allowed_program| allowed_program == &program_id_str)
+            {
+                return Err(format!("Program not allowed: {}", program_id));
+            }
+        }
+
         Ok(())
     }
 }
