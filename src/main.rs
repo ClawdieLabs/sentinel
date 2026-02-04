@@ -7,6 +7,7 @@ use axum::{
 use base64::Engine as _;
 use std::fs;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 mod policy;
 mod simulation;
@@ -19,7 +20,7 @@ use tokio::signal;
 
 #[derive(Clone)]
 struct AppState {
-    policy_engine: Arc<PolicyEngine>,
+    policy_engine: Arc<RwLock<PolicyEngine>>,
     simulator: Arc<HeliusSimulator>,
     logger: Arc<AuditLogger>,
 }
@@ -29,6 +30,11 @@ struct SimulateRequest {
     transaction: String,
 }
 
+#[derive(serde::Deserialize)]
+struct UpdatePolicyRequest {
+    allowed_programs: Vec<String>,
+}
+
 #[derive(serde::Serialize)]
 struct ErrorResponse {
     error: String,
@@ -36,6 +42,29 @@ struct ErrorResponse {
 
 async fn hello() -> &'static str {
     "Hello, world!"
+}
+
+async fn get_logs(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<AuditEntry>>, (StatusCode, Json<ErrorResponse>)> {
+    let logs = state.logger.get_logs().map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to retrieve logs: {err}"),
+            }),
+        )
+    })?;
+    Ok(Json(logs))
+}
+
+async fn update_policy(
+    State(state): State<AppState>,
+    Json(request): Json<UpdatePolicyRequest>,
+) -> StatusCode {
+    let mut policy_engine = state.policy_engine.write().await;
+    policy_engine.update_allowed_programs(request.allowed_programs);
+    StatusCode::OK
 }
 
 async fn simulate(
@@ -66,7 +95,10 @@ async fn simulate(
 
     let signature = tx.signatures.get(0).map(|s| s.to_string());
 
-    let policy_check = state.policy_engine.check_transaction(&tx);
+    let policy_check = {
+        let engine = state.policy_engine.read().await;
+        engine.check_transaction(&tx)
+    };
     
     if let Err(err) = &policy_check {
         let entry = AuditEntry {
@@ -125,7 +157,7 @@ async fn shutdown_signal() {
 async fn main() {
     let config_text = fs::read_to_string("config.toml").expect("read config.toml");
     let policy: Policy = toml::from_str(&config_text).expect("parse config.toml");
-    let policy_engine = Arc::new(PolicyEngine::new(policy));
+    let policy_engine = Arc::new(RwLock::new(PolicyEngine::new(policy)));
     let simulator = Arc::new(HeliusSimulator::new().expect("create Helius simulator"));
     let logger = Arc::new(AuditLogger::new("audit_log.sled").expect("create audit logger"));
     
@@ -138,6 +170,8 @@ async fn main() {
     let app = Router::new()
         .route("/", get(hello))
         .route("/simulate", post(simulate))
+        .route("/logs", get(get_logs))
+        .route("/policy", post(update_policy))
         .with_state(app_state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")

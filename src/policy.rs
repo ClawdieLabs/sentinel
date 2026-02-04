@@ -47,4 +47,8 @@ impl PolicyEngine {
     pub fn check_transaction(&self, tx: &Transaction) -> Result<(), String> {
         self.policy.check_transaction(tx)
     }
+
+    pub fn update_allowed_programs(&mut self, allowed_programs: Vec<String>) {
+        self.policy.allowed_programs = allowed_programs;
+    }
 }

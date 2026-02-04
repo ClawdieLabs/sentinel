@@ -43,6 +43,17 @@ impl AuditLogger {
             
         Ok(())
     }
+
+    pub fn get_logs(&self) -> Result<Vec<AuditEntry>> {
+        let mut logs = Vec::new();
+        for item in self.db.iter() {
+            let (_key, value) = item.map_err(|e| anyhow!("Sled iteration error: {}", e))?;
+            let entry: AuditEntry = serde_json::from_slice(&value)
+                .map_err(|e| anyhow!("Failed to deserialize audit entry: {}", e))?;
+            logs.push(entry);
+        }
+        Ok(logs)
+    }
 }
 
 pub fn current_timestamp() -> u64 {
