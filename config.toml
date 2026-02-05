@@ -1,3 +1,4 @@
 max_sol_per_tx = 1
 allowed_programs = []
 blocked_addresses = []
+simulation_checks_enabled = true

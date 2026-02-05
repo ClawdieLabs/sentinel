@@ -65,6 +65,7 @@ fn test_policy(allowed_programs: Vec<String>) -> Policy {
         max_sol_per_tx: None,
         allowed_programs,
         blocked_addresses: vec![],
+        simulation_checks_enabled: true,
     }
 }
 

@@ -30,6 +30,7 @@ fn policy_with_allowed(program_ids: &[Pubkey]) -> Policy {
         max_sol_per_tx: None,
         allowed_programs: program_ids.iter().map(Pubkey::to_string).collect(),
         blocked_addresses: vec![],
+        simulation_checks_enabled: true,
     }
 }
 

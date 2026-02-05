@@ -13,7 +13,7 @@ pub mod policy;
 pub mod simulation;
 
 use logger::{AuditEntry, AuditLogger, Decision, current_timestamp};
-use policy::{Policy, PolicyEngine};
+use policy::{MaxUnitsCheck, NoErrorCheck, Policy, PolicyEngine, SimulationCheck};
 use simulation::{Simulate, SimulationResult};
 
 #[derive(Clone)]
@@ -131,6 +131,34 @@ async fn simulate(
                 }),
             )
         })?;
+
+    let simulation_checks_enabled = {
+        let engine = state.policy_engine.read().await;
+        engine.simulation_checks_enabled()
+    };
+
+    if simulation_checks_enabled {
+        let no_error_check = NoErrorCheck;
+        let max_units_check = MaxUnitsCheck;
+        let checks: [&dyn SimulationCheck; 2] = [&no_error_check, &max_units_check];
+
+        for check in checks {
+            if let Err(err) = check.check(&result) {
+                let entry = AuditEntry {
+                    timestamp: current_timestamp(),
+                    transaction_signature: signature.clone(),
+                    decision: Decision::Blocked(err.clone()),
+                    simulation_result: Some(result.clone()),
+                };
+                let _ = state.logger.log(entry);
+
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    Json(ErrorResponse { error: err }),
+                ));
+            }
+        }
+    }
 
     let entry = AuditEntry {
         timestamp: current_timestamp(),

@@ -1,3 +1,4 @@
+use crate::simulation::SimulationResult;
 use serde::Deserialize;
 
 use solana_sdk::transaction::Transaction;
@@ -7,6 +8,8 @@ pub struct Policy {
     pub max_sol_per_tx: Option<u64>,
     pub allowed_programs: Vec<String>,
     pub blocked_addresses: Vec<String>,
+    #[serde(default)]
+    pub simulation_checks_enabled: bool,
 }
 
 impl Policy {
@@ -34,6 +37,47 @@ impl Policy {
     }
 }
 
+pub trait SimulationCheck {
+    fn check(&self, result: &SimulationResult) -> Result<(), String>;
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct NoErrorCheck;
+
+impl SimulationCheck for NoErrorCheck {
+    fn check(&self, result: &SimulationResult) -> Result<(), String> {
+        if let Some(err) = &result.error {
+            return Err(format!("Simulation error: {err}"));
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MaxUnitsCheck;
+
+impl MaxUnitsCheck {
+    pub const LIMIT: u64 = 200_000;
+}
+
+impl SimulationCheck for MaxUnitsCheck {
+    fn check(&self, result: &SimulationResult) -> Result<(), String> {
+        let units = result
+            .units_consumed
+            .ok_or_else(|| "Simulation missing units consumed".to_string())?;
+
+        if units > Self::LIMIT {
+            return Err(format!(
+                "Simulation exceeded max units: {} > {}",
+                units, Self::LIMIT
+            ));
+        }
+
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PolicyEngine {
     policy: Policy,
@@ -50,5 +94,9 @@ impl PolicyEngine {
 
     pub fn update_allowed_programs(&mut self, allowed_programs: Vec<String>) {
         self.policy.allowed_programs = allowed_programs;
+    }
+
+    pub fn simulation_checks_enabled(&self) -> bool {
+        self.policy.simulation_checks_enabled
     }
 }
