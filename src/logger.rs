@@ -29,7 +29,11 @@ impl AuditLogger {
     }
 
     pub fn log(&self, entry: AuditEntry) -> Result<()> {
-        let key = entry.timestamp.to_be_bytes();
+        let key = self
+            .db
+            .generate_id()
+            .map_err(|e| anyhow!("Failed to generate sled id: {}", e))?
+            .to_be_bytes();
         let value = serde_json::to_vec(&entry)
             .map_err(|e| anyhow!("Failed to serialize audit entry: {}", e))?;
 

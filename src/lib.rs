@@ -69,26 +69,51 @@ async fn simulate(
     State(state): State<AppState>,
     Json(request): Json<SimulateRequest>,
 ) -> Result<Json<SimulationResult>, (StatusCode, Json<ErrorResponse>)> {
-    let tx_bytes = base64::engine::general_purpose::STANDARD
-        .decode(request.transaction)
-        .map_err(|err| {
-            (
+    let log_blocked = |signature: Option<String>,
+                       reason: String,
+                       simulation_result: Option<SimulationResult>| {
+        let entry = AuditEntry {
+            timestamp: current_timestamp(),
+            transaction_signature: signature,
+            decision: Decision::Blocked(reason),
+            simulation_result,
+        };
+        let _ = state.logger.log(entry);
+    };
+
+    let tx_bytes = match base64::engine::general_purpose::STANDARD.decode(request.transaction) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            log_blocked(
+                None,
+                format!("Invalid base64 transaction: {err}"),
+                None,
+            );
+            return Err((
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
                     error: format!("Invalid base64 transaction: {err}"),
                 }),
-            )
-        })?;
+            ));
+        }
+    };
 
-    let tx: solana_sdk::transaction::Transaction =
-        bincode::deserialize(&tx_bytes).map_err(|err| {
-            (
+    let tx: solana_sdk::transaction::Transaction = match bincode::deserialize(&tx_bytes) {
+        Ok(tx) => tx,
+        Err(err) => {
+            log_blocked(
+                None,
+                format!("Invalid transaction payload: {err}"),
+                None,
+            );
+            return Err((
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
                     error: format!("Invalid transaction payload: {err}"),
                 }),
-            )
-        })?;
+            ));
+        }
+    };
 
     let signature = tx.signatures.first().map(|s| s.to_string());
 
@@ -113,24 +138,30 @@ async fn simulate(
     }
 
     let simulator = state.simulator.clone();
-    let result = tokio::task::spawn_blocking(move || simulator.simulate_transaction(&tx))
-        .await
-        .map_err(|err| {
-            (
+    let result = match tokio::task::spawn_blocking(move || simulator.simulate_transaction(&tx)).await
+    {
+        Ok(result) => result,
+        Err(err) => {
+            let reason = format!("Simulation task failed: {err}");
+            log_blocked(signature.clone(), reason.clone(), None);
+            return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Simulation task failed: {err}"),
-                }),
-            )
-        })?
-        .map_err(|err| {
-            (
+                Json(ErrorResponse { error: reason }),
+            ));
+        }
+    };
+
+    let result = match result {
+        Ok(result) => result,
+        Err(err) => {
+            let reason = format!("Simulation failed: {err}");
+            log_blocked(signature.clone(), reason.clone(), None);
+            return Err((
                 StatusCode::BAD_GATEWAY,
-                Json(ErrorResponse {
-                    error: format!("Simulation failed: {err}"),
-                }),
-            )
-        })?;
+                Json(ErrorResponse { error: reason }),
+            ));
+        }
+    };
 
     let simulation_checks_enabled = {
         let engine = state.policy_engine.read().await;
