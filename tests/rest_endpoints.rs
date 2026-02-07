@@ -15,7 +15,7 @@ use tower::ServiceExt;
 use sentinel::{
     build_app,
     logger::{AuditEntry, AuditLogger, Decision},
-    policy::Policy,
+    policy::{MaxUnitsCheck, Policy},
     simulation::{ReturnData, Simulate, SimulationResult},
 };
 
@@ -60,27 +60,54 @@ fn mock_result() -> SimulationResult {
     }
 }
 
-fn test_policy(allowed_programs: Vec<String>) -> Policy {
+fn simulation_result_with_error() -> SimulationResult {
+    SimulationResult {
+        logs: vec!["simulated transaction".to_string()],
+        units_consumed: Some(120_000),
+        return_data: None,
+        error: Some(serde_json::json!({
+            "InstructionError": [0, {"Custom": 6001}]
+        })),
+    }
+}
+
+fn simulation_result_with_units(units_consumed: u64) -> SimulationResult {
+    SimulationResult {
+        logs: vec!["simulated transaction".to_string()],
+        units_consumed: Some(units_consumed),
+        return_data: None,
+        error: None,
+    }
+}
+
+fn test_policy(allowed_programs: Vec<String>, simulation_checks_enabled: bool) -> Policy {
     Policy {
         max_sol_per_tx: None,
         allowed_programs,
         blocked_addresses: vec![],
-        simulation_checks_enabled: true,
+        simulation_checks_enabled,
     }
 }
 
-fn test_app(allowed_programs: Vec<String>) -> (axum::Router, TempDir) {
+fn test_app_with_result(
+    allowed_programs: Vec<String>,
+    simulation_result: SimulationResult,
+) -> (axum::Router, TempDir) {
     let tmp_dir = tempfile::tempdir().expect("temp dir");
     let db_path = tmp_dir.path().join("audit.sled");
     let logger = Arc::new(AuditLogger::new(db_path.to_str().expect("db path")).expect("logger"));
     let simulator: Arc<dyn Simulate + Send + Sync> = Arc::new(MockSimulator {
-        result: mock_result(),
+        result: simulation_result,
     });
 
     (
-        build_app(test_policy(allowed_programs), simulator, logger),
+        build_app(test_policy(allowed_programs, true), simulator, logger),
         tmp_dir,
     )
+}
+
+fn test_app(allowed_programs: Vec<String>) -> (axum::Router, TempDir) {
+    test_app_with_result(allowed_programs, mock_result())
 }
 
 fn json_request(path: &str, payload: serde_json::Value) -> Request<Body> {
@@ -169,7 +196,7 @@ async fn policy_endpoint_allows_stake_after_update() {
 }
 
 #[tokio::test]
-async fn simulate_logs_allowed_transaction_and_exposes_it_via_logs_endpoint() {
+async fn simulate_logs_allowed_and_blocked_transactions() {
     let transfer_id = system_program::id();
     let (app, _tmp_dir) = test_app(vec![transfer_id.to_string()]);
 
@@ -189,6 +216,17 @@ async fn simulate_logs_allowed_transaction_and_exposes_it_via_logs_endpoint() {
     let simulation: SimulationResult =
         serde_json::from_slice(&simulation_body).expect("simulation result");
     assert_eq!(simulation.units_consumed, Some(42_000));
+
+    let blocked_response = app
+        .clone()
+        .oneshot(json_request(
+            "/simulate",
+            serde_json::json!({ "transaction": encoded_transaction(stake::program::id()) }),
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(blocked_response.status(), StatusCode::FORBIDDEN);
 
     let logs_response = app
         .oneshot(
@@ -213,5 +251,114 @@ async fn simulate_logs_allowed_transaction_and_exposes_it_via_logs_endpoint() {
                 .as_ref()
                 .and_then(|r| r.units_consumed)
                 == Some(42_000)
+    }));
+    assert!(
+        logs.iter()
+            .any(|entry| matches!(entry.decision, Decision::Blocked(_)))
+    );
+}
+
+#[tokio::test]
+async fn simulate_enforces_no_error_check_and_logs_failure() {
+    let transfer_id = system_program::id();
+    let (app, _tmp_dir) = test_app_with_result(
+        vec![transfer_id.to_string()],
+        simulation_result_with_error(),
+    );
+
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "/simulate",
+            serde_json::json!({ "transaction": encoded_transaction(transfer_id) }),
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("response bytes");
+    let payload: serde_json::Value = serde_json::from_slice(&body).expect("error payload");
+    let error = payload["error"].as_str().expect("error text");
+    assert!(error.contains("Simulation error"));
+
+    let logs_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/logs")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(logs_response.status(), StatusCode::OK);
+    let logs_body = to_bytes(logs_response.into_body(), usize::MAX)
+        .await
+        .expect("logs bytes");
+    let logs: Vec<AuditEntry> = serde_json::from_slice(&logs_body).expect("audit entries");
+
+    assert!(logs.iter().any(|entry| {
+        matches!(entry.decision, Decision::Blocked(ref reason) if reason.contains("Simulation error"))
+            && entry
+                .simulation_result
+                .as_ref()
+                .and_then(|result| result.error.as_ref())
+                .is_some()
+    }));
+}
+
+#[tokio::test]
+async fn simulate_enforces_max_units_check_and_logs_failure() {
+    let transfer_id = system_program::id();
+    let over_limit_units = MaxUnitsCheck::LIMIT + 1;
+    let (app, _tmp_dir) = test_app_with_result(
+        vec![transfer_id.to_string()],
+        simulation_result_with_units(over_limit_units),
+    );
+
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "/simulate",
+            serde_json::json!({ "transaction": encoded_transaction(transfer_id) }),
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("response bytes");
+    let payload: serde_json::Value = serde_json::from_slice(&body).expect("error payload");
+    let error = payload["error"].as_str().expect("error text");
+    assert!(error.contains("Simulation exceeded max units"));
+
+    let logs_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/logs")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(logs_response.status(), StatusCode::OK);
+    let logs_body = to_bytes(logs_response.into_body(), usize::MAX)
+        .await
+        .expect("logs bytes");
+    let logs: Vec<AuditEntry> = serde_json::from_slice(&logs_body).expect("audit entries");
+
+    assert!(logs.iter().any(|entry| {
+        matches!(entry.decision, Decision::Blocked(ref reason) if reason.contains("Simulation exceeded max units"))
+            && entry
+                .simulation_result
+                .as_ref()
+                .and_then(|result| result.units_consumed)
+                .is_some_and(|units| units > MaxUnitsCheck::LIMIT)
     }));
 }

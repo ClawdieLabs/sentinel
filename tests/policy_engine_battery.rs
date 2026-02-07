@@ -1,6 +1,11 @@
 use solana_sdk::{
-    instruction::Instruction, message::Message, pubkey::Pubkey, signature::Keypair, signer::Signer,
-    stake, system_program, transaction::Transaction,
+    instruction::{AccountMeta, Instruction},
+    message::Message,
+    pubkey::Pubkey,
+    signature::Keypair,
+    signer::Signer,
+    stake, system_instruction, system_program,
+    transaction::Transaction,
 };
 use std::str::FromStr;
 
@@ -10,19 +15,56 @@ fn dex_swap_program_id() -> Pubkey {
     Pubkey::from_str("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4").expect("valid pubkey")
 }
 
-fn build_transaction(program_ids: &[Pubkey]) -> Transaction {
+fn build_transaction(instructions: Vec<Instruction>) -> Transaction {
     let payer = Keypair::new();
-    let instructions: Vec<Instruction> = program_ids
-        .iter()
-        .map(|program_id| Instruction {
-            program_id: *program_id,
-            accounts: vec![],
-            data: vec![1, 2, 3],
-        })
-        .collect();
-
     let message = Message::new(&instructions, Some(&payer.pubkey()));
     Transaction::new_unsigned(message)
+}
+
+fn jupiter_swap_transaction() -> Transaction {
+    let payer = Keypair::new();
+    let authority = payer.pubkey();
+    let instruction = Instruction {
+        program_id: dex_swap_program_id(),
+        accounts: vec![
+            AccountMeta::new(authority, true),
+            AccountMeta::new_readonly(Pubkey::new_unique(), false),
+            AccountMeta::new(Pubkey::new_unique(), false),
+        ],
+        data: vec![9, 9, 9, 1],
+    };
+    let message = Message::new(&[instruction], Some(&authority));
+    Transaction::new_unsigned(message)
+}
+
+fn system_transfer_transaction() -> Transaction {
+    let payer = Keypair::new();
+    let recipient = Pubkey::new_unique();
+    build_transaction(vec![system_instruction::transfer(
+        &payer.pubkey(),
+        &recipient,
+        1_500_000,
+    )])
+}
+
+fn stake_delegate_transaction() -> Transaction {
+    let authority = Keypair::new();
+    let stake_account = Pubkey::new_unique();
+    let vote_account = Pubkey::new_unique();
+    build_transaction(vec![stake::instruction::delegate_stake(
+        &stake_account,
+        &authority.pubkey(),
+        &vote_account,
+    )])
+}
+
+fn stake_deactivate_transaction() -> Transaction {
+    let authority = Keypair::new();
+    let stake_account = Pubkey::new_unique();
+    build_transaction(vec![stake::instruction::deactivate_stake(
+        &stake_account,
+        &authority.pubkey(),
+    )])
 }
 
 fn policy_with_allowed(program_ids: &[Pubkey]) -> Policy {
@@ -35,30 +77,36 @@ fn policy_with_allowed(program_ids: &[Pubkey]) -> Policy {
 }
 
 #[test]
-fn allows_dex_swap_transfer_and_stake_when_all_programs_are_whitelisted() {
+fn allows_jupiter_transfer_and_stake_instructions_when_all_programs_are_whitelisted() {
     let dex_id = dex_swap_program_id();
     let transfer_id = system_program::id();
     let stake_id = stake::program::id();
 
     let engine = PolicyEngine::new(policy_with_allowed(&[dex_id, transfer_id, stake_id]));
 
-    let dex_tx = build_transaction(&[dex_id]);
-    let transfer_tx = build_transaction(&[transfer_id]);
-    let stake_tx = build_transaction(&[stake_id]);
+    let battery = vec![
+        ("jupiter-swap", jupiter_swap_transaction()),
+        ("system-transfer", system_transfer_transaction()),
+        ("stake-delegate", stake_delegate_transaction()),
+        ("stake-deactivate", stake_deactivate_transaction()),
+    ];
 
-    assert!(engine.check_transaction(&dex_tx).is_ok());
-    assert!(engine.check_transaction(&transfer_tx).is_ok());
-    assert!(engine.check_transaction(&stake_tx).is_ok());
+    for (name, tx) in battery {
+        assert!(
+            engine.check_transaction(&tx).is_ok(),
+            "expected {name} to be allowed"
+        );
+    }
 }
 
 #[test]
-fn blocks_dex_swap_when_dex_program_is_not_whitelisted() {
+fn blocks_jupiter_swap_when_dex_program_is_not_whitelisted() {
     let dex_id = dex_swap_program_id();
     let transfer_id = system_program::id();
     let stake_id = stake::program::id();
 
     let engine = PolicyEngine::new(policy_with_allowed(&[transfer_id, stake_id]));
-    let dex_tx = build_transaction(&[dex_id]);
+    let dex_tx = jupiter_swap_transaction();
 
     let err = engine
         .check_transaction(&dex_tx)
@@ -67,17 +115,53 @@ fn blocks_dex_swap_when_dex_program_is_not_whitelisted() {
 }
 
 #[test]
-fn blocks_transaction_when_any_instruction_uses_non_whitelisted_program() {
+fn blocks_system_transfer_when_system_program_is_not_whitelisted() {
+    let dex_id = dex_swap_program_id();
+    let stake_id = stake::program::id();
+    let transfer_id = system_program::id().to_string();
+
+    let engine = PolicyEngine::new(policy_with_allowed(&[dex_id, stake_id]));
+    let transfer_tx = system_transfer_transaction();
+
+    let err = engine
+        .check_transaction(&transfer_tx)
+        .expect_err("transfer should be blocked");
+    assert!(err.contains(&transfer_id));
+}
+
+#[test]
+fn blocks_stake_instruction_when_stake_program_is_not_whitelisted() {
     let dex_id = dex_swap_program_id();
     let transfer_id = system_program::id();
+    let stake_id = stake::program::id().to_string();
 
+    let engine = PolicyEngine::new(policy_with_allowed(&[dex_id, transfer_id]));
+    let stake_tx = stake_delegate_transaction();
+
+    let err = engine
+        .check_transaction(&stake_tx)
+        .expect_err("stake transaction should be blocked");
+    assert!(err.contains(&stake_id));
+}
+
+#[test]
+fn blocks_mixed_transaction_if_any_instruction_program_is_not_whitelisted() {
+    let transfer_id = system_program::id();
     let engine = PolicyEngine::new(policy_with_allowed(&[transfer_id]));
-    let mixed_tx = build_transaction(&[transfer_id, dex_id]);
+
+    let mixed_tx = build_transaction(vec![
+        system_instruction::transfer(&Pubkey::new_unique(), &Pubkey::new_unique(), 5_000),
+        Instruction {
+            program_id: dex_swap_program_id(),
+            accounts: vec![AccountMeta::new_readonly(Pubkey::new_unique(), false)],
+            data: vec![1, 2, 3],
+        },
+    ]);
 
     let err = engine
         .check_transaction(&mixed_tx)
         .expect_err("mixed transaction should be blocked");
-    assert!(err.contains(&dex_id.to_string()));
+    assert!(err.contains(&dex_swap_program_id().to_string()));
 }
 
 #[test]
@@ -86,7 +170,7 @@ fn update_allowed_programs_unblocks_stake_transactions() {
     let stake_id = stake::program::id();
 
     let mut engine = PolicyEngine::new(policy_with_allowed(&[transfer_id]));
-    let stake_tx = build_transaction(&[stake_id]);
+    let stake_tx = stake_delegate_transaction();
 
     assert!(engine.check_transaction(&stake_tx).is_err());
 
