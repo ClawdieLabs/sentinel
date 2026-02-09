@@ -1,5 +1,7 @@
 use crate::simulation::SimulationResult;
 use serde::Deserialize;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use solana_sdk::transaction::Transaction;
 
@@ -7,6 +9,7 @@ use solana_sdk::transaction::Transaction;
 pub struct Policy {
     pub max_sol_per_tx: Option<u64>,
     pub max_balance_drain_lamports: Option<u64>,
+    pub rate_limit_per_minute: Option<u32>,
     pub allowed_programs: Vec<String>,
     pub blocked_addresses: Vec<String>,
     #[serde(default)]
@@ -71,7 +74,8 @@ impl SimulationCheck for MaxUnitsCheck {
         if units > Self::LIMIT {
             return Err(format!(
                 "Simulation exceeded max units: {} > {}",
-                units, Self::LIMIT
+                units,
+                Self::LIMIT
             ));
         }
 
@@ -105,15 +109,68 @@ impl SimulationCheck for MaxBalanceDrainCheck {
 #[derive(Debug, Clone)]
 pub struct PolicyEngine {
     policy: Policy,
+    rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
+}
+
+#[derive(Debug)]
+struct RateLimiter {
+    limit_per_minute: u32,
+    window_start: Instant,
+    transaction_count: u32,
+}
+
+impl RateLimiter {
+    const WINDOW_DURATION: Duration = Duration::from_secs(60);
+
+    fn new(limit_per_minute: u32) -> Self {
+        Self {
+            limit_per_minute,
+            window_start: Instant::now(),
+            transaction_count: 0,
+        }
+    }
+
+    fn check_and_increment(&mut self) -> Result<(), String> {
+        if self.window_start.elapsed() >= Self::WINDOW_DURATION {
+            self.window_start = Instant::now();
+            self.transaction_count = 0;
+        }
+
+        if self.transaction_count >= self.limit_per_minute {
+            return Err(format!(
+                "Rate limit exceeded: {} transactions per minute",
+                self.limit_per_minute
+            ));
+        }
+
+        self.transaction_count += 1;
+        Ok(())
+    }
 }
 
 impl PolicyEngine {
     pub fn new(policy: Policy) -> Self {
-        Self { policy }
+        let rate_limiter = policy
+            .rate_limit_per_minute
+            .map(|limit| Arc::new(Mutex::new(RateLimiter::new(limit))));
+
+        Self {
+            policy,
+            rate_limiter,
+        }
     }
 
     pub fn check_transaction(&self, tx: &Transaction) -> Result<(), String> {
-        self.policy.check_transaction(tx)
+        self.policy.check_transaction(tx)?;
+
+        if let Some(rate_limiter) = &self.rate_limiter {
+            let mut limiter = rate_limiter
+                .lock()
+                .map_err(|_| "Rate limiter lock poisoned".to_string())?;
+            limiter.check_and_increment()?;
+        }
+
+        Ok(())
     }
 
     pub fn update_allowed_programs(&mut self, allowed_programs: Vec<String>) {

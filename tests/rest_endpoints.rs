@@ -103,6 +103,7 @@ fn test_policy(
     Policy {
         max_sol_per_tx: None,
         max_balance_drain_lamports,
+        rate_limit_per_minute: None,
         allowed_programs,
         blocked_addresses: vec![],
         simulation_checks_enabled,
@@ -393,7 +394,7 @@ async fn simulate_enforces_max_balance_drain_check() {
     let limit = 1_000_000; // 1M lamports
     let drain = limit + 1;
     let account = Pubkey::new_unique().to_string();
-    
+
     let policy = test_policy(vec![transfer_id.to_string()], true, Some(limit));
     let (app, _tmp_dir) = test_app_with_result_and_policy(
         policy,
@@ -409,7 +410,9 @@ async fn simulate_enforces_max_balance_drain_check() {
         .expect("response");
 
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    let body = to_bytes(response.into_body(), usize::MAX).await.expect("body");
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
     let payload: serde_json::Value = serde_json::from_slice(&body).expect("payload");
     assert!(payload["error"].as_str().unwrap().contains("balance drain"));
 }
@@ -444,10 +447,15 @@ async fn simulate_logs_intent_field() {
         .await
         .expect("response");
 
-    let body = to_bytes(logs_response.into_body(), usize::MAX).await.expect("body");
+    let body = to_bytes(logs_response.into_body(), usize::MAX)
+        .await
+        .expect("body");
     let logs: Vec<AuditEntry> = serde_json::from_slice(&body).expect("logs");
-    
-    assert!(logs.iter().any(|entry| entry.intent.as_ref() == Some(&intent)));
+
+    assert!(
+        logs.iter()
+            .any(|entry| entry.intent.as_ref() == Some(&intent))
+    );
 }
 
 #[tokio::test]
@@ -478,9 +486,14 @@ async fn override_workflow_allows_blocked_transaction() {
         .expect("response");
 
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    let body = to_bytes(response.into_body(), usize::MAX).await.expect("body");
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
     let payload: serde_json::Value = serde_json::from_slice(&body).expect("payload");
-    let block_id = payload["block_id"].as_str().expect("block_id exists").to_string();
+    let block_id = payload["block_id"]
+        .as_str()
+        .expect("block_id exists")
+        .to_string();
 
     // 2. Log should show PendingApproval
     let logs_response = app
@@ -493,7 +506,9 @@ async fn override_workflow_allows_blocked_transaction() {
         )
         .await
         .expect("response");
-    let logs_body = to_bytes(logs_response.into_body(), usize::MAX).await.expect("body");
+    let logs_body = to_bytes(logs_response.into_body(), usize::MAX)
+        .await
+        .expect("body");
     let logs: Vec<AuditEntry> = serde_json::from_slice(&logs_body).expect("logs");
     assert!(logs.iter().any(|entry| {
         matches!(entry.decision, Decision::PendingApproval(ref id) if id == &block_id)
@@ -513,8 +528,11 @@ async fn override_workflow_allows_blocked_transaction() {
         .expect("response");
 
     assert_eq!(override_response.status(), StatusCode::OK);
-    let override_body = to_bytes(override_response.into_body(), usize::MAX).await.expect("body");
-    let result: SimulationResult = serde_json::from_slice(&override_body).expect("simulation result");
+    let override_body = to_bytes(override_response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let result: SimulationResult =
+        serde_json::from_slice(&override_body).expect("simulation result");
     assert_eq!(result.balance_changes.get(&account), Some(&-(drain as i64)));
 
     // 4. Final log should show Allowed
@@ -528,11 +546,16 @@ async fn override_workflow_allows_blocked_transaction() {
         )
         .await
         .expect("response");
-    let logs_body = to_bytes(logs_response.into_body(), usize::MAX).await.expect("body");
+    let logs_body = to_bytes(logs_response.into_body(), usize::MAX)
+        .await
+        .expect("body");
     let logs: Vec<AuditEntry> = serde_json::from_slice(&logs_body).expect("logs");
-    
+
     // We expect both the Pending and the Allowed entry
-    assert!(logs.iter().any(|entry| matches!(entry.decision, Decision::Allowed)));
+    assert!(
+        logs.iter()
+            .any(|entry| matches!(entry.decision, Decision::Allowed))
+    );
 }
 
 #[tokio::test]
@@ -553,7 +576,9 @@ async fn override_workflow_rejects_transaction() {
         .expect("response");
 
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    let body = to_bytes(response.into_body(), usize::MAX).await.expect("body");
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
     let payload: serde_json::Value = serde_json::from_slice(&body).expect("payload");
     let block_id = payload["block_id"].as_str().expect("block_id").to_string();
 
@@ -570,8 +595,9 @@ async fn override_workflow_rejects_transaction() {
         .expect("response");
 
     assert_eq!(override_response.status(), StatusCode::FORBIDDEN);
-    let body = to_bytes(override_response.into_body(), usize::MAX).await.expect("body");
+    let body = to_bytes(override_response.into_body(), usize::MAX)
+        .await
+        .expect("body");
     let payload: serde_json::Value = serde_json::from_slice(&body).expect("payload");
     assert_eq!(payload["error"], "Rejected by human override");
 }
-

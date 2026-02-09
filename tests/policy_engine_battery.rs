@@ -71,6 +71,7 @@ fn policy_with_allowed(program_ids: &[Pubkey]) -> Policy {
     Policy {
         max_sol_per_tx: None,
         max_balance_drain_lamports: None,
+        rate_limit_per_minute: None,
         allowed_programs: program_ids.iter().map(Pubkey::to_string).collect(),
         blocked_addresses: vec![],
         simulation_checks_enabled: true,
@@ -178,4 +179,26 @@ fn update_allowed_programs_unblocks_stake_transactions() {
     engine.update_allowed_programs(vec![transfer_id.to_string(), stake_id.to_string()]);
 
     assert!(engine.check_transaction(&stake_tx).is_ok());
+}
+
+#[test]
+fn blocks_transactions_when_rate_limit_is_exceeded() {
+    let transfer_id = system_program::id();
+    let engine = PolicyEngine::new(Policy {
+        max_sol_per_tx: None,
+        max_balance_drain_lamports: None,
+        rate_limit_per_minute: Some(2),
+        allowed_programs: vec![transfer_id.to_string()],
+        blocked_addresses: vec![],
+        simulation_checks_enabled: true,
+    });
+    let transfer_tx = system_transfer_transaction();
+
+    assert!(engine.check_transaction(&transfer_tx).is_ok());
+    assert!(engine.check_transaction(&transfer_tx).is_ok());
+
+    let err = engine
+        .check_transaction(&transfer_tx)
+        .expect_err("third transaction should be rate limited");
+    assert!(err.contains("Rate limit exceeded"));
 }
