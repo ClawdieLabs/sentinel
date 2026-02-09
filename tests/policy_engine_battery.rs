@@ -70,6 +70,7 @@ fn stake_deactivate_transaction() -> Transaction {
 fn policy_with_allowed(program_ids: &[Pubkey]) -> Policy {
     Policy {
         max_sol_per_tx: None,
+        max_balance_drain_lamports: None,
         allowed_programs: program_ids.iter().map(Pubkey::to_string).collect(),
         blocked_addresses: vec![],
         simulation_checks_enabled: true,
