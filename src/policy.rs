@@ -6,6 +6,7 @@ use solana_sdk::transaction::Transaction;
 #[derive(Debug, Deserialize, Clone)]
 pub struct Policy {
     pub max_sol_per_tx: Option<u64>,
+    pub max_balance_drain_lamports: Option<u64>,
     pub allowed_programs: Vec<String>,
     pub blocked_addresses: Vec<String>,
     #[serde(default)]
@@ -78,6 +79,29 @@ impl SimulationCheck for MaxUnitsCheck {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct MaxBalanceDrainCheck {
+    pub limit: u64,
+}
+
+impl SimulationCheck for MaxBalanceDrainCheck {
+    fn check(&self, result: &SimulationResult) -> Result<(), String> {
+        for (account, change) in &result.balance_changes {
+            if *change < 0 {
+                let drain = change.abs() as u64;
+                if drain > self.limit {
+                    return Err(format!(
+                        "Account {} balance drain {} exceeds limit {}",
+                        account, drain, self.limit
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PolicyEngine {
     policy: Policy,
@@ -98,5 +122,9 @@ impl PolicyEngine {
 
     pub fn simulation_checks_enabled(&self) -> bool {
         self.policy.simulation_checks_enabled
+    }
+
+    pub fn max_balance_drain_lamports(&self) -> Option<u64> {
+        self.policy.max_balance_drain_lamports
     }
 }
