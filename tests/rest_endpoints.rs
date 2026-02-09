@@ -57,6 +57,7 @@ fn mock_result() -> SimulationResult {
             program_id: system_program::id().to_string(),
         }),
         error: None,
+        balance_changes: std::collections::HashMap::new(),
     }
 }
 
@@ -68,6 +69,7 @@ fn simulation_result_with_error() -> SimulationResult {
         error: Some(serde_json::json!({
             "InstructionError": [0, {"Custom": 6001}]
         })),
+        balance_changes: std::collections::HashMap::new(),
     }
 }
 
@@ -77,20 +79,38 @@ fn simulation_result_with_units(units_consumed: u64) -> SimulationResult {
         units_consumed: Some(units_consumed),
         return_data: None,
         error: None,
+        balance_changes: std::collections::HashMap::new(),
     }
 }
 
-fn test_policy(allowed_programs: Vec<String>, simulation_checks_enabled: bool) -> Policy {
+fn simulation_result_with_drain(account: String, drain: u64) -> SimulationResult {
+    let mut balance_changes = std::collections::HashMap::new();
+    balance_changes.insert(account, -(drain as i64));
+    SimulationResult {
+        logs: vec!["simulated transaction".to_string()],
+        units_consumed: Some(50_000),
+        return_data: None,
+        error: None,
+        balance_changes,
+    }
+}
+
+fn test_policy(
+    allowed_programs: Vec<String>,
+    simulation_checks_enabled: bool,
+    max_balance_drain_lamports: Option<u64>,
+) -> Policy {
     Policy {
         max_sol_per_tx: None,
+        max_balance_drain_lamports,
         allowed_programs,
         blocked_addresses: vec![],
         simulation_checks_enabled,
     }
 }
 
-fn test_app_with_result(
-    allowed_programs: Vec<String>,
+fn test_app_with_result_and_policy(
+    policy: Policy,
     simulation_result: SimulationResult,
 ) -> (axum::Router, TempDir) {
     let tmp_dir = tempfile::tempdir().expect("temp dir");
@@ -100,10 +120,14 @@ fn test_app_with_result(
         result: simulation_result,
     });
 
-    (
-        build_app(test_policy(allowed_programs, true), simulator, logger),
-        tmp_dir,
-    )
+    (build_app(policy, simulator, logger), tmp_dir)
+}
+
+fn test_app_with_result(
+    allowed_programs: Vec<String>,
+    simulation_result: SimulationResult,
+) -> (axum::Router, TempDir) {
+    test_app_with_result_and_policy(test_policy(allowed_programs, true, None), simulation_result)
 }
 
 fn test_app(allowed_programs: Vec<String>) -> (axum::Router, TempDir) {
@@ -361,4 +385,67 @@ async fn simulate_enforces_max_units_check_and_logs_failure() {
                 .and_then(|result| result.units_consumed)
                 .is_some_and(|units| units > MaxUnitsCheck::LIMIT)
     }));
+}
+
+#[tokio::test]
+async fn simulate_enforces_max_balance_drain_check() {
+    let transfer_id = system_program::id();
+    let limit = 1_000_000; // 1M lamports
+    let drain = limit + 1;
+    let account = Pubkey::new_unique().to_string();
+    
+    let policy = test_policy(vec![transfer_id.to_string()], true, Some(limit));
+    let (app, _tmp_dir) = test_app_with_result_and_policy(
+        policy,
+        simulation_result_with_drain(account.clone(), drain),
+    );
+
+    let response = app
+        .oneshot(json_request(
+            "/simulate",
+            serde_json::json!({ "transaction": encoded_transaction(transfer_id) }),
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = to_bytes(response.into_body(), usize::MAX).await.expect("body");
+    let payload: serde_json::Value = serde_json::from_slice(&body).expect("payload");
+    assert!(payload["error"].as_str().unwrap().contains("balance drain"));
+}
+
+#[tokio::test]
+async fn simulate_logs_intent_field() {
+    let transfer_id = system_program::id();
+    let intent = "Test Intent".to_string();
+    let (app, _tmp_dir) = test_app(vec![transfer_id.to_string()]);
+
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "/simulate",
+            serde_json::json!({
+                "transaction": encoded_transaction(transfer_id),
+                "intent": intent
+            }),
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let logs_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/logs")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    let body = to_bytes(logs_response.into_body(), usize::MAX).await.expect("body");
+    let logs: Vec<AuditEntry> = serde_json::from_slice(&body).expect("logs");
+    
+    assert!(logs.iter().any(|entry| entry.intent.as_ref() == Some(&intent)));
 }
