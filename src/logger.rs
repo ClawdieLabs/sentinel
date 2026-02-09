@@ -16,6 +16,7 @@ pub struct AuditEntry {
     pub transaction_signature: Option<String>,
     pub decision: Decision,
     pub simulation_result: Option<SimulationResult>,
+    pub intent: Option<String>,
 }
 
 pub struct AuditLogger {

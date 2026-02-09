@@ -26,6 +26,7 @@ struct AppState {
 #[derive(serde::Deserialize)]
 struct SimulateRequest {
     transaction: String,
+    intent: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -69,6 +70,7 @@ async fn simulate(
     State(state): State<AppState>,
     Json(request): Json<SimulateRequest>,
 ) -> Result<Json<SimulationResult>, (StatusCode, Json<ErrorResponse>)> {
+    let intent = request.intent.clone();
     let log_blocked = |signature: Option<String>,
                        reason: String,
                        simulation_result: Option<SimulationResult>| {
@@ -77,6 +79,7 @@ async fn simulate(
             transaction_signature: signature,
             decision: Decision::Blocked(reason),
             simulation_result,
+            intent: intent.clone(),
         };
         let _ = state.logger.log(entry);
     };
@@ -128,6 +131,7 @@ async fn simulate(
             transaction_signature: signature.clone(),
             decision: Decision::Blocked(err.clone()),
             simulation_result: None,
+            intent: intent.clone(),
         };
         let _ = state.logger.log(entry);
 
@@ -171,7 +175,19 @@ async fn simulate(
     if simulation_checks_enabled {
         let no_error_check = NoErrorCheck;
         let max_units_check = MaxUnitsCheck;
-        let checks: [&dyn SimulationCheck; 2] = [&no_error_check, &max_units_check];
+        let max_balance_drain = {
+            let engine = state.policy_engine.read().await;
+            engine.max_balance_drain_lamports()
+        };
+
+        let mut checks: Vec<Box<dyn SimulationCheck>> = vec![
+            Box::new(no_error_check),
+            Box::new(max_units_check),
+        ];
+
+        if let Some(limit) = max_balance_drain {
+            checks.push(Box::new(policy::MaxBalanceDrainCheck { limit }));
+        }
 
         for check in checks {
             if let Err(err) = check.check(&result) {
@@ -180,6 +196,7 @@ async fn simulate(
                     transaction_signature: signature.clone(),
                     decision: Decision::Blocked(err.clone()),
                     simulation_result: Some(result.clone()),
+                    intent: intent.clone(),
                 };
                 let _ = state.logger.log(entry);
 
@@ -196,6 +213,7 @@ async fn simulate(
         transaction_signature: signature,
         decision: Decision::Allowed,
         simulation_result: Some(result.clone()),
+        intent: intent.clone(),
     };
     let _ = state.logger.log(entry);
 
