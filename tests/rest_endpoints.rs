@@ -449,3 +449,129 @@ async fn simulate_logs_intent_field() {
     
     assert!(logs.iter().any(|entry| entry.intent.as_ref() == Some(&intent)));
 }
+
+#[tokio::test]
+async fn override_workflow_allows_blocked_transaction() {
+    let transfer_id = system_program::id();
+    let limit = 1_000_000;
+    let drain = limit + 1;
+    let account = Pubkey::new_unique().to_string();
+    let intent = "drain me daddy".to_string();
+
+    let policy = test_policy(vec![transfer_id.to_string()], true, Some(limit));
+    let (app, _tmp_dir) = test_app_with_result_and_policy(
+        policy,
+        simulation_result_with_drain(account.clone(), drain),
+    );
+
+    // 1. Initial simulation should block and return block_id
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "/simulate",
+            serde_json::json!({
+                "transaction": encoded_transaction(transfer_id),
+                "intent": intent
+            }),
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = to_bytes(response.into_body(), usize::MAX).await.expect("body");
+    let payload: serde_json::Value = serde_json::from_slice(&body).expect("payload");
+    let block_id = payload["block_id"].as_str().expect("block_id exists").to_string();
+
+    // 2. Log should show PendingApproval
+    let logs_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/logs")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let logs_body = to_bytes(logs_response.into_body(), usize::MAX).await.expect("body");
+    let logs: Vec<AuditEntry> = serde_json::from_slice(&logs_body).expect("logs");
+    assert!(logs.iter().any(|entry| {
+        matches!(entry.decision, Decision::PendingApproval(ref id) if id == &block_id)
+    }));
+
+    // 3. Send ALLOW override
+    let override_response = app
+        .clone()
+        .oneshot(json_request(
+            "/override",
+            serde_json::json!({
+                "block_id": block_id,
+                "action": "ALLOW"
+            }),
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(override_response.status(), StatusCode::OK);
+    let override_body = to_bytes(override_response.into_body(), usize::MAX).await.expect("body");
+    let result: SimulationResult = serde_json::from_slice(&override_body).expect("simulation result");
+    assert_eq!(result.balance_changes.get(&account), Some(&-(drain as i64)));
+
+    // 4. Final log should show Allowed
+    let logs_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/logs")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let logs_body = to_bytes(logs_response.into_body(), usize::MAX).await.expect("body");
+    let logs: Vec<AuditEntry> = serde_json::from_slice(&logs_body).expect("logs");
+    
+    // We expect both the Pending and the Allowed entry
+    assert!(logs.iter().any(|entry| matches!(entry.decision, Decision::Allowed)));
+}
+
+#[tokio::test]
+async fn override_workflow_rejects_transaction() {
+    let transfer_id = system_program::id();
+    let (app, _tmp_dir) = test_app_with_result(
+        vec![transfer_id.to_string()],
+        simulation_result_with_error(),
+    );
+
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "/simulate",
+            serde_json::json!({ "transaction": encoded_transaction(transfer_id) }),
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = to_bytes(response.into_body(), usize::MAX).await.expect("body");
+    let payload: serde_json::Value = serde_json::from_slice(&body).expect("payload");
+    let block_id = payload["block_id"].as_str().expect("block_id").to_string();
+
+    let override_response = app
+        .clone()
+        .oneshot(json_request(
+            "/override",
+            serde_json::json!({
+                "block_id": block_id,
+                "action": "REJECT"
+            }),
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(override_response.status(), StatusCode::FORBIDDEN);
+    let body = to_bytes(override_response.into_body(), usize::MAX).await.expect("body");
+    let payload: serde_json::Value = serde_json::from_slice(&body).expect("payload");
+    assert_eq!(payload["error"], "Rejected by human override");
+}
+

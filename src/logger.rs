@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub enum Decision {
     Allowed,
     Blocked(String),
+    PendingApproval(String),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
