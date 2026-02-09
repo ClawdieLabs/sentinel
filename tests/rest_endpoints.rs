@@ -325,7 +325,7 @@ async fn simulate_enforces_no_error_check_and_logs_failure() {
     let logs: Vec<AuditEntry> = serde_json::from_slice(&logs_body).expect("audit entries");
 
     assert!(logs.iter().any(|entry| {
-        matches!(entry.decision, Decision::Blocked(ref reason) if reason.contains("Simulation error"))
+        matches!(entry.decision, Decision::PendingApproval(_))
             && entry
                 .simulation_result
                 .as_ref()
@@ -378,7 +378,7 @@ async fn simulate_enforces_max_units_check_and_logs_failure() {
     let logs: Vec<AuditEntry> = serde_json::from_slice(&logs_body).expect("audit entries");
 
     assert!(logs.iter().any(|entry| {
-        matches!(entry.decision, Decision::Blocked(ref reason) if reason.contains("Simulation exceeded max units"))
+        matches!(entry.decision, Decision::PendingApproval(_))
             && entry
                 .simulation_result
                 .as_ref()

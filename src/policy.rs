@@ -38,7 +38,7 @@ impl Policy {
     }
 }
 
-pub trait SimulationCheck {
+pub trait SimulationCheck: Send + Sync {
     fn check(&self, result: &SimulationResult) -> Result<(), String>;
 }
 
