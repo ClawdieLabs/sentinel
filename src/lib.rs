@@ -9,6 +9,7 @@ use base64::Engine as _;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tower_http::services::ServeDir;
 use uuid::Uuid;
 
 pub mod logger;
@@ -19,11 +20,20 @@ use logger::{AuditEntry, AuditLogger, Decision, current_timestamp};
 use policy::{MaxUnitsCheck, NoErrorCheck, Policy, PolicyEngine, SimulationCheck};
 use simulation::{Simulate, SimulationResult};
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize)]
 struct PendingApproval {
+    #[serde(serialize_with = "serialize_tx")]
     transaction: solana_sdk::transaction::Transaction,
     simulation_result: SimulationResult,
     intent: Option<String>,
+}
+
+fn serialize_tx<S>(tx: &solana_sdk::transaction::Transaction, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let bytes = bincode::serialize(tx).map_err(serde::ser::Error::custom)?;
+    serializer.serialize_str(&base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
 #[derive(Clone)]
@@ -287,6 +297,11 @@ async fn get_logs(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
+async fn get_pending(State(state): State<AppState>) -> impl IntoResponse {
+    let pending = state.pending_approvals.read().await;
+    Json(pending.clone()).into_response()
+}
+
 async fn override_block(
     State(state): State<AppState>,
     Json(request): Json<OverrideRequest>,
@@ -361,7 +376,9 @@ pub fn build_app(
         .route("/", get(hello))
         .route("/simulate", post(simulate))
         .route("/logs", get(get_logs))
+        .route("/pending", get(get_pending))
         .route("/policy", post(update_policy))
         .route("/override", post(override_block))
+        .nest_service("/dashboard", ServeDir::new("static"))
         .with_state(app_state)
 }
