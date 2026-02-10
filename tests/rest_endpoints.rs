@@ -181,6 +181,57 @@ async fn simulate_rejects_invalid_base64_payload() {
 }
 
 #[tokio::test]
+async fn simulate_rejects_invalid_transaction_payload_and_logs_reason() {
+    let (app, _tmp_dir) = test_app(vec![]);
+    let garbage_payload = base64::engine::general_purpose::STANDARD.encode([1u8, 2, 3, 4, 5]);
+    let intent = "broken tx bytes".to_string();
+
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "/simulate",
+            serde_json::json!({
+                "transaction": garbage_payload,
+                "intent": intent
+            }),
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let payload: serde_json::Value = serde_json::from_slice(&body).expect("payload");
+    assert!(
+        payload["error"]
+            .as_str()
+            .expect("error text")
+            .contains("Invalid transaction payload")
+    );
+
+    let logs_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/logs")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(logs_response.status(), StatusCode::OK);
+
+    let logs_body = to_bytes(logs_response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let logs: Vec<AuditEntry> = serde_json::from_slice(&logs_body).expect("logs");
+    assert!(logs.iter().any(|entry| {
+        matches!(entry.decision, Decision::Blocked(ref msg) if msg.contains("Invalid transaction payload"))
+            && entry.intent.as_ref() == Some(&intent)
+    }));
+}
+
+#[tokio::test]
 async fn policy_endpoint_allows_stake_after_update() {
     let transfer_id = system_program::id();
     let stake_id = stake::program::id();
@@ -209,6 +260,44 @@ async fn policy_endpoint_allows_stake_after_update() {
         .await
         .expect("response");
     assert_eq!(update_response.status(), StatusCode::OK);
+
+    let after_update = app
+        .oneshot(json_request(
+            "/simulate",
+            serde_json::json!({ "transaction": stake_tx }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(after_update.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn policy_endpoint_with_empty_allowlist_allows_previously_blocked_programs() {
+    let transfer_id = system_program::id();
+    let stake_id = stake::program::id();
+
+    let (app, _tmp_dir) = test_app(vec![transfer_id.to_string()]);
+    let stake_tx = encoded_transaction(stake_id);
+
+    let before_update = app
+        .clone()
+        .oneshot(json_request(
+            "/simulate",
+            serde_json::json!({ "transaction": stake_tx.clone() }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(before_update.status(), StatusCode::FORBIDDEN);
+
+    let clear_policy_response = app
+        .clone()
+        .oneshot(json_request(
+            "/policy",
+            serde_json::json!({ "allowed_programs": [] }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(clear_policy_response.status(), StatusCode::OK);
 
     let after_update = app
         .oneshot(json_request(
@@ -280,6 +369,48 @@ async fn simulate_logs_allowed_and_blocked_transactions() {
     assert!(
         logs.iter()
             .any(|entry| matches!(entry.decision, Decision::Blocked(_)))
+    );
+}
+
+#[tokio::test]
+async fn simulate_bypasses_simulation_checks_when_disabled() {
+    let transfer_id = system_program::id();
+    let policy = test_policy(vec![transfer_id.to_string()], false, Some(10));
+    let (app, _tmp_dir) = test_app_with_result_and_policy(policy, simulation_result_with_error());
+
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "/simulate",
+            serde_json::json!({ "transaction": encoded_transaction(transfer_id) }),
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let result: SimulationResult = serde_json::from_slice(&body).expect("simulation result");
+    assert!(result.error.is_some());
+
+    let logs_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/logs")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(logs_response.status(), StatusCode::OK);
+    let logs_body = to_bytes(logs_response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let logs: Vec<AuditEntry> = serde_json::from_slice(&logs_body).expect("logs");
+    assert!(
+        logs.iter()
+            .any(|entry| matches!(entry.decision, Decision::Allowed))
     );
 }
 
@@ -600,4 +731,28 @@ async fn override_workflow_rejects_transaction() {
         .expect("body");
     let payload: serde_json::Value = serde_json::from_slice(&body).expect("payload");
     assert_eq!(payload["error"], "Rejected by human override");
+}
+
+#[tokio::test]
+async fn override_returns_not_found_for_unknown_block_id() {
+    let transfer_id = system_program::id();
+    let (app, _tmp_dir) = test_app(vec![transfer_id.to_string()]);
+
+    let response = app
+        .oneshot(json_request(
+            "/override",
+            serde_json::json!({
+                "block_id": "00000000-0000-0000-0000-000000000000",
+                "action": "ALLOW"
+            }),
+        ))
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let payload: serde_json::Value = serde_json::from_slice(&body).expect("payload");
+    assert_eq!(payload["error"], "Block ID not found");
 }

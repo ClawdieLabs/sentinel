@@ -1,9 +1,9 @@
 use axum::{
+    Json, Router,
     extract::State,
     http::StatusCode,
-    routing::{get, post},
-    Json, Router,
     response::IntoResponse,
+    routing::{get, post},
 };
 use base64::Engine as _;
 use std::collections::HashMap;
@@ -15,7 +15,7 @@ pub mod logger;
 pub mod policy;
 pub mod simulation;
 
-use logger::{current_timestamp, AuditEntry, AuditLogger, Decision};
+use logger::{AuditEntry, AuditLogger, Decision, current_timestamp};
 use policy::{MaxUnitsCheck, NoErrorCheck, Policy, PolicyEngine, SimulationCheck};
 use simulation::{Simulate, SimulationResult};
 
@@ -100,7 +100,8 @@ async fn simulate(
                     error: format!("Invalid base64 transaction: {err}"),
                     block_id: None,
                 }),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -121,7 +122,8 @@ async fn simulate(
                     error: format!("Invalid transaction payload: {err}"),
                     block_id: None,
                 }),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -148,13 +150,14 @@ async fn simulate(
                 error: err,
                 block_id: None,
             }),
-        ).into_response();
+        )
+            .into_response();
     }
 
     let simulator = state.simulator.clone();
     let tx_clone = tx.clone();
-    let spawn_result = tokio::task::spawn_blocking(move || simulator.simulate_transaction(&tx_clone))
-        .await;
+    let spawn_result =
+        tokio::task::spawn_blocking(move || simulator.simulate_transaction(&tx_clone)).await;
 
     let res = match spawn_result {
         Ok(r) => r,
@@ -174,7 +177,8 @@ async fn simulate(
                     error: reason,
                     block_id: None,
                 }),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -196,7 +200,8 @@ async fn simulate(
                     error: reason,
                     block_id: None,
                 }),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -218,10 +223,7 @@ async fn simulate(
                 Box::new(policy::MaxBalanceDrainCheck { limit }),
             ]
         } else {
-            vec![
-                Box::new(NoErrorCheck),
-                Box::new(MaxUnitsCheck),
-            ]
+            vec![Box::new(NoErrorCheck), Box::new(MaxUnitsCheck)]
         };
 
         for check in checks {
@@ -253,7 +255,8 @@ async fn simulate(
                         error: err,
                         block_id: Some(block_id),
                     }),
-                ).into_response();
+                )
+                    .into_response();
             }
         }
     }
@@ -270,9 +273,7 @@ async fn simulate(
     Json(result).into_response()
 }
 
-async fn get_logs(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+async fn get_logs(State(state): State<AppState>) -> impl IntoResponse {
     match state.logger.get_logs() {
         Ok(logs) => Json(logs).into_response(),
         Err(err) => (
@@ -281,7 +282,8 @@ async fn get_logs(
                 error: format!("Failed to retrieve logs: {err}"),
                 block_id: None,
             }),
-        ).into_response(),
+        )
+            .into_response(),
     }
 }
 
@@ -292,16 +294,23 @@ async fn override_block(
     let mut pending_approvals = state.pending_approvals.write().await;
     let pending = match pending_approvals.remove(&request.block_id) {
         Some(p) => p,
-        None => return (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: "Block ID not found".to_string(),
-                block_id: None,
-            }),
-        ).into_response(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "Block ID not found".to_string(),
+                    block_id: None,
+                }),
+            )
+                .into_response();
+        }
     };
 
-    let signature = pending.transaction.signatures.first().map(|s| s.to_string());
+    let signature = pending
+        .transaction
+        .signatures
+        .first()
+        .map(|s| s.to_string());
 
     match request.action {
         OverrideAction::Allow => {
@@ -330,7 +339,8 @@ async fn override_block(
                     error: "Rejected by human override".to_string(),
                     block_id: None,
                 }),
-            ).into_response()
+            )
+                .into_response()
         }
     }
 }

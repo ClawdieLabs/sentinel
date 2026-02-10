@@ -15,17 +15,21 @@ fn dex_swap_program_id() -> Pubkey {
     Pubkey::from_str("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4").expect("valid pubkey")
 }
 
+fn raydium_swap_program_id() -> Pubkey {
+    Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8").expect("valid pubkey")
+}
+
 fn build_transaction(instructions: Vec<Instruction>) -> Transaction {
     let payer = Keypair::new();
     let message = Message::new(&instructions, Some(&payer.pubkey()));
     Transaction::new_unsigned(message)
 }
 
-fn jupiter_swap_transaction() -> Transaction {
+fn dex_swap_transaction(program_id: Pubkey) -> Transaction {
     let payer = Keypair::new();
     let authority = payer.pubkey();
     let instruction = Instruction {
-        program_id: dex_swap_program_id(),
+        program_id,
         accounts: vec![
             AccountMeta::new(authority, true),
             AccountMeta::new_readonly(Pubkey::new_unique(), false),
@@ -35,6 +39,14 @@ fn jupiter_swap_transaction() -> Transaction {
     };
     let message = Message::new(&[instruction], Some(&authority));
     Transaction::new_unsigned(message)
+}
+
+fn jupiter_swap_transaction() -> Transaction {
+    dex_swap_transaction(dex_swap_program_id())
+}
+
+fn raydium_swap_transaction() -> Transaction {
+    dex_swap_transaction(raydium_swap_program_id())
 }
 
 fn system_transfer_transaction() -> Transaction {
@@ -81,13 +93,20 @@ fn policy_with_allowed(program_ids: &[Pubkey]) -> Policy {
 #[test]
 fn allows_jupiter_transfer_and_stake_instructions_when_all_programs_are_whitelisted() {
     let dex_id = dex_swap_program_id();
+    let raydium_id = raydium_swap_program_id();
     let transfer_id = system_program::id();
     let stake_id = stake::program::id();
 
-    let engine = PolicyEngine::new(policy_with_allowed(&[dex_id, transfer_id, stake_id]));
+    let engine = PolicyEngine::new(policy_with_allowed(&[
+        dex_id,
+        raydium_id,
+        transfer_id,
+        stake_id,
+    ]));
 
     let battery = vec![
         ("jupiter-swap", jupiter_swap_transaction()),
+        ("raydium-swap", raydium_swap_transaction()),
         ("system-transfer", system_transfer_transaction()),
         ("stake-delegate", stake_delegate_transaction()),
         ("stake-deactivate", stake_deactivate_transaction()),
@@ -104,10 +123,11 @@ fn allows_jupiter_transfer_and_stake_instructions_when_all_programs_are_whitelis
 #[test]
 fn blocks_jupiter_swap_when_dex_program_is_not_whitelisted() {
     let dex_id = dex_swap_program_id();
+    let raydium_id = raydium_swap_program_id();
     let transfer_id = system_program::id();
     let stake_id = stake::program::id();
 
-    let engine = PolicyEngine::new(policy_with_allowed(&[transfer_id, stake_id]));
+    let engine = PolicyEngine::new(policy_with_allowed(&[raydium_id, transfer_id, stake_id]));
     let dex_tx = jupiter_swap_transaction();
 
     let err = engine
@@ -119,10 +139,11 @@ fn blocks_jupiter_swap_when_dex_program_is_not_whitelisted() {
 #[test]
 fn blocks_system_transfer_when_system_program_is_not_whitelisted() {
     let dex_id = dex_swap_program_id();
+    let raydium_id = raydium_swap_program_id();
     let stake_id = stake::program::id();
     let transfer_id = system_program::id().to_string();
 
-    let engine = PolicyEngine::new(policy_with_allowed(&[dex_id, stake_id]));
+    let engine = PolicyEngine::new(policy_with_allowed(&[dex_id, raydium_id, stake_id]));
     let transfer_tx = system_transfer_transaction();
 
     let err = engine
@@ -134,10 +155,11 @@ fn blocks_system_transfer_when_system_program_is_not_whitelisted() {
 #[test]
 fn blocks_stake_instruction_when_stake_program_is_not_whitelisted() {
     let dex_id = dex_swap_program_id();
+    let raydium_id = raydium_swap_program_id();
     let transfer_id = system_program::id();
     let stake_id = stake::program::id().to_string();
 
-    let engine = PolicyEngine::new(policy_with_allowed(&[dex_id, transfer_id]));
+    let engine = PolicyEngine::new(policy_with_allowed(&[dex_id, raydium_id, transfer_id]));
     let stake_tx = stake_delegate_transaction();
 
     let err = engine
@@ -164,6 +186,32 @@ fn blocks_mixed_transaction_if_any_instruction_program_is_not_whitelisted() {
         .check_transaction(&mixed_tx)
         .expect_err("mixed transaction should be blocked");
     assert!(err.contains(&dex_swap_program_id().to_string()));
+}
+
+#[test]
+fn blocks_each_unwhitelisted_dex_program_in_transaction_battery() {
+    let transfer_id = system_program::id();
+    let stake_id = stake::program::id();
+    let engine = PolicyEngine::new(policy_with_allowed(&[transfer_id, stake_id]));
+
+    let dex_tx_cases = vec![
+        ("jupiter", dex_swap_program_id(), jupiter_swap_transaction()),
+        (
+            "raydium",
+            raydium_swap_program_id(),
+            raydium_swap_transaction(),
+        ),
+    ];
+
+    for (name, program_id, tx) in dex_tx_cases {
+        let err = engine
+            .check_transaction(&tx)
+            .expect_err("unwhitelisted dex should be blocked");
+        assert!(
+            err.contains(&program_id.to_string()),
+            "expected {name} transaction to mention blocked program"
+        );
+    }
 }
 
 #[test]
