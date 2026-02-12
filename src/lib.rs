@@ -16,7 +16,9 @@ pub mod logger;
 pub mod policy;
 pub mod simulation;
 
-use logger::{AuditEntry, AuditLogger, Decision, current_timestamp};
+use logger::{
+    AuditEntry, AuditLogger, AuditResult, Decision, TransactionDetails, current_timestamp,
+};
 use policy::{MaxUnitsCheck, NoErrorCheck, Policy, PolicyEngine, SimulationCheck};
 use simulation::{Simulate, SimulationResult};
 
@@ -28,7 +30,10 @@ struct PendingApproval {
     intent: Option<String>,
 }
 
-fn serialize_tx<S>(tx: &solana_sdk::transaction::Transaction, serializer: S) -> Result<S::Ok, S::Error>
+fn serialize_tx<S>(
+    tx: &solana_sdk::transaction::Transaction,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
@@ -88,26 +93,62 @@ async fn update_policy(
     StatusCode::OK
 }
 
+fn build_audit_entry(
+    transaction_signature: Option<String>,
+    decision: Decision,
+    result: AuditResult,
+    reasoning: String,
+    simulation_result: Option<SimulationResult>,
+    intent: Option<String>,
+    transaction_details: Option<TransactionDetails>,
+) -> AuditEntry {
+    let simulation_logs = simulation_result
+        .as_ref()
+        .map(|result| result.logs.clone())
+        .unwrap_or_default();
+
+    AuditEntry {
+        timestamp: current_timestamp(),
+        transaction_signature,
+        decision,
+        simulation_result,
+        intent,
+        result,
+        reasoning,
+        simulation_logs,
+        transaction_details,
+    }
+}
+
 async fn simulate(
     State(state): State<AppState>,
     Json(request): Json<SimulateRequest>,
 ) -> impl IntoResponse {
     let intent = request.intent.clone();
+    let request_payload = request.transaction.clone();
+    let request_details = TransactionDetails::from_request_payload(request_payload.clone());
+
     let tx_bytes = match base64::engine::general_purpose::STANDARD.decode(&request.transaction) {
         Ok(bytes) => bytes,
         Err(err) => {
+            let reason = format!("Invalid base64 transaction: {err}");
             let entry = AuditEntry {
-                timestamp: current_timestamp(),
                 transaction_signature: None,
-                decision: Decision::Blocked(format!("Invalid base64 transaction: {err}")),
-                simulation_result: None,
-                intent: intent.clone(),
+                ..build_audit_entry(
+                    None,
+                    Decision::Blocked(reason.clone()),
+                    AuditResult::Blocked,
+                    reason.clone(),
+                    None,
+                    intent.clone(),
+                    Some(request_details.clone()),
+                )
             };
             let _ = state.logger.log(entry);
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
-                    error: format!("Invalid base64 transaction: {err}"),
+                    error: reason,
                     block_id: None,
                 }),
             )
@@ -118,18 +159,24 @@ async fn simulate(
     let tx: solana_sdk::transaction::Transaction = match bincode::deserialize(&tx_bytes) {
         Ok(tx) => tx,
         Err(err) => {
+            let reason = format!("Invalid transaction payload: {err}");
             let entry = AuditEntry {
-                timestamp: current_timestamp(),
                 transaction_signature: None,
-                decision: Decision::Blocked(format!("Invalid transaction payload: {err}")),
-                simulation_result: None,
-                intent: intent.clone(),
+                ..build_audit_entry(
+                    None,
+                    Decision::Blocked(reason.clone()),
+                    AuditResult::Blocked,
+                    reason.clone(),
+                    None,
+                    intent.clone(),
+                    Some(request_details.clone()),
+                )
             };
             let _ = state.logger.log(entry);
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
-                    error: format!("Invalid transaction payload: {err}"),
+                    error: reason,
                     block_id: None,
                 }),
             )
@@ -137,7 +184,8 @@ async fn simulate(
         }
     };
 
-    let signature = tx.signatures.first().map(|s| s.to_string());
+    let tx_details = TransactionDetails::from_transaction_request(request_payload, &tx);
+    let signature = tx_details.signature.clone();
 
     let policy_check = {
         let engine = state.policy_engine.read().await;
@@ -146,11 +194,15 @@ async fn simulate(
 
     if let Err(err) = policy_check {
         let entry = AuditEntry {
-            timestamp: current_timestamp(),
-            transaction_signature: signature.clone(),
-            decision: Decision::Blocked(err.clone()),
-            simulation_result: None,
-            intent: intent.clone(),
+            ..build_audit_entry(
+                signature.clone(),
+                Decision::Blocked(err.clone()),
+                AuditResult::Blocked,
+                err.clone(),
+                None,
+                intent.clone(),
+                Some(tx_details.clone()),
+            )
         };
         let _ = state.logger.log(entry);
 
@@ -174,11 +226,15 @@ async fn simulate(
         Err(err) => {
             let reason = format!("Simulation task failed: {err}");
             let entry = AuditEntry {
-                timestamp: current_timestamp(),
-                transaction_signature: signature.clone(),
-                decision: Decision::Blocked(reason.clone()),
-                simulation_result: None,
-                intent: intent.clone(),
+                ..build_audit_entry(
+                    signature.clone(),
+                    Decision::Blocked(reason.clone()),
+                    AuditResult::Blocked,
+                    reason.clone(),
+                    None,
+                    intent.clone(),
+                    Some(tx_details.clone()),
+                )
             };
             let _ = state.logger.log(entry);
             return (
@@ -197,11 +253,15 @@ async fn simulate(
         Err(err) => {
             let reason = format!("Simulation failed: {err}");
             let entry = AuditEntry {
-                timestamp: current_timestamp(),
-                transaction_signature: signature.clone(),
-                decision: Decision::Blocked(reason.clone()),
-                simulation_result: None,
-                intent: intent.clone(),
+                ..build_audit_entry(
+                    signature.clone(),
+                    Decision::Blocked(reason.clone()),
+                    AuditResult::Blocked,
+                    reason.clone(),
+                    None,
+                    intent.clone(),
+                    Some(tx_details.clone()),
+                )
             };
             let _ = state.logger.log(entry);
             return (
@@ -241,11 +301,15 @@ async fn simulate(
                 let block_id = Uuid::new_v4().to_string();
 
                 let entry = AuditEntry {
-                    timestamp: current_timestamp(),
-                    transaction_signature: signature.clone(),
-                    decision: Decision::PendingApproval(block_id.clone()),
-                    simulation_result: Some(result.clone()),
-                    intent: intent.clone(),
+                    ..build_audit_entry(
+                        signature.clone(),
+                        Decision::PendingApproval(block_id.clone()),
+                        AuditResult::Blocked,
+                        err.clone(),
+                        Some(result.clone()),
+                        intent.clone(),
+                        Some(tx_details.clone()),
+                    )
                 };
                 let _ = state.logger.log(entry);
 
@@ -272,11 +336,15 @@ async fn simulate(
     }
 
     let entry = AuditEntry {
-        timestamp: current_timestamp(),
-        transaction_signature: signature,
-        decision: Decision::Allowed,
-        simulation_result: Some(result.clone()),
-        intent: intent.clone(),
+        ..build_audit_entry(
+            signature,
+            Decision::Allowed,
+            AuditResult::Allowed,
+            "All policy and simulation checks passed".to_string(),
+            Some(result.clone()),
+            intent.clone(),
+            Some(tx_details),
+        )
     };
     let _ = state.logger.log(entry);
 
@@ -321,37 +389,47 @@ async fn override_block(
         }
     };
 
-    let signature = pending
-        .transaction
-        .signatures
-        .first()
-        .map(|s| s.to_string());
+    let tx_details = TransactionDetails::from_transaction(&pending.transaction);
+    let signature = tx_details.signature.clone();
 
     match request.action {
         OverrideAction::Allow => {
+            let reason = format!(
+                "Approved by human override for block_id={}",
+                request.block_id
+            );
             let entry = AuditEntry {
-                timestamp: current_timestamp(),
-                transaction_signature: signature,
-                decision: Decision::Allowed,
-                simulation_result: Some(pending.simulation_result.clone()),
-                intent: pending.intent,
+                ..build_audit_entry(
+                    signature,
+                    Decision::Allowed,
+                    AuditResult::Allowed,
+                    reason,
+                    Some(pending.simulation_result.clone()),
+                    pending.intent,
+                    Some(tx_details),
+                )
             };
             let _ = state.logger.log(entry);
             Json(pending.simulation_result).into_response()
         }
         OverrideAction::Reject => {
+            let reason = "Rejected by human override".to_string();
             let entry = AuditEntry {
-                timestamp: current_timestamp(),
-                transaction_signature: signature,
-                decision: Decision::Blocked("Rejected by human override".to_string()),
-                simulation_result: Some(pending.simulation_result),
-                intent: pending.intent,
+                ..build_audit_entry(
+                    signature,
+                    Decision::Blocked(reason.clone()),
+                    AuditResult::Blocked,
+                    reason.clone(),
+                    Some(pending.simulation_result),
+                    pending.intent,
+                    Some(tx_details),
+                )
             };
             let _ = state.logger.log(entry);
             (
                 StatusCode::FORBIDDEN,
                 Json(ErrorResponse {
-                    error: "Rejected by human override".to_string(),
+                    error: reason,
                     block_id: None,
                 }),
             )
