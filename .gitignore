@@ -1,3 +1,8 @@
 /target
 .env
 /.hackathon/
+.DS_Store
+__pycache__/
+*.py[cod]
+audit_logs/
+*.log
