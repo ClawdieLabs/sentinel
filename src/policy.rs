@@ -7,10 +7,15 @@ use solana_sdk::transaction::Transaction;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Policy {
+    #[serde(default)]
     pub max_sol_per_tx: Option<u64>,
+    #[serde(default)]
     pub max_balance_drain_lamports: Option<u64>,
+    #[serde(default)]
     pub rate_limit_per_minute: Option<u32>,
+    #[serde(default)]
     pub allowed_programs: Vec<String>,
+    #[serde(default)]
     pub blocked_addresses: Vec<String>,
     #[serde(default)]
     pub simulation_checks_enabled: bool,
