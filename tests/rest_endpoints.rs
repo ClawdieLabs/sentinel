@@ -228,6 +228,7 @@ async fn simulate_rejects_invalid_transaction_payload_and_logs_reason() {
     assert!(logs.iter().any(|entry| {
         matches!(entry.decision, Decision::Blocked(ref msg) if msg.contains("Invalid transaction payload"))
             && entry.intent.as_ref() == Some(&intent)
+            && entry.transaction_id.is_some()
     }));
 }
 

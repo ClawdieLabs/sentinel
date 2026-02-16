@@ -2,6 +2,7 @@ use crate::simulation::SimulationResult;
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use sled::Db;
+use solana_sdk::hash::hash;
 use solana_sdk::transaction::Transaction;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -93,6 +94,8 @@ impl TransactionDetails {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEntry {
     pub timestamp: u64,
+    #[serde(default)]
+    pub transaction_id: Option<String>,
     pub transaction_signature: Option<String>,
     pub decision: Decision,
     pub simulation_result: Option<SimulationResult>,
@@ -105,6 +108,10 @@ pub struct AuditEntry {
     pub simulation_logs: Vec<String>,
     #[serde(default)]
     pub transaction_details: Option<TransactionDetails>,
+}
+
+pub fn hash_transaction_payload(payload: &str) -> String {
+    hash(payload.as_bytes()).to_string()
 }
 
 pub struct AuditLogger {

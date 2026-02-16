@@ -18,6 +18,7 @@ pub mod simulation;
 
 use logger::{
     AuditEntry, AuditLogger, AuditResult, Decision, TransactionDetails, current_timestamp,
+    hash_transaction_payload,
 };
 use policy::{MaxUnitsCheck, NoErrorCheck, Policy, PolicyEngine, SimulationCheck};
 use simulation::{Simulate, SimulationResult};
@@ -106,9 +107,16 @@ fn build_audit_entry(
         .as_ref()
         .map(|result| result.logs.clone())
         .unwrap_or_default();
+    let transaction_id = transaction_signature.clone().or_else(|| {
+        transaction_details
+            .as_ref()
+            .and_then(|details| details.request_payload_base64.as_ref())
+            .map(|payload| hash_transaction_payload(payload))
+    });
 
     AuditEntry {
         timestamp: current_timestamp(),
+        transaction_id,
         transaction_signature,
         decision,
         simulation_result,
