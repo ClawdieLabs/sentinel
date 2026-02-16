@@ -182,6 +182,10 @@ impl PolicyEngine {
         self.policy.allowed_programs = allowed_programs;
     }
 
+    pub fn allowed_programs(&self) -> Vec<String> {
+        self.policy.allowed_programs.clone()
+    }
+
     pub fn simulation_checks_enabled(&self) -> bool {
         self.policy.simulation_checks_enabled
     }

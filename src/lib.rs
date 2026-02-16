@@ -1,6 +1,6 @@
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -61,6 +61,20 @@ struct UpdatePolicyRequest {
     allowed_programs: Vec<String>,
 }
 
+#[derive(serde::Serialize)]
+struct PolicyResponse {
+    allowed_programs: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct LogsQuery {
+    limit: Option<usize>,
+    offset: Option<usize>,
+    transaction_id: Option<String>,
+    signature: Option<String>,
+    result: Option<AuditResult>,
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 enum OverrideAction {
@@ -88,10 +102,19 @@ async fn hello() -> &'static str {
 async fn update_policy(
     State(state): State<AppState>,
     Json(request): Json<UpdatePolicyRequest>,
-) -> StatusCode {
+) -> Json<PolicyResponse> {
     let mut policy_engine = state.policy_engine.write().await;
     policy_engine.update_allowed_programs(request.allowed_programs);
-    StatusCode::OK
+    Json(PolicyResponse {
+        allowed_programs: policy_engine.allowed_programs(),
+    })
+}
+
+async fn get_policy(State(state): State<AppState>) -> Json<PolicyResponse> {
+    let policy_engine = state.policy_engine.read().await;
+    Json(PolicyResponse {
+        allowed_programs: policy_engine.allowed_programs(),
+    })
 }
 
 fn build_audit_entry(
@@ -359,9 +382,82 @@ async fn simulate(
     Json(result).into_response()
 }
 
-async fn get_logs(State(state): State<AppState>) -> impl IntoResponse {
+async fn get_logs(
+    State(state): State<AppState>,
+    Query(query): Query<LogsQuery>,
+) -> impl IntoResponse {
     match state.logger.get_logs() {
-        Ok(logs) => Json(logs).into_response(),
+        Ok(mut logs) => {
+            logs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+            if let Some(transaction_id) = query.transaction_id {
+                logs.retain(|entry| {
+                    entry.transaction_id.as_deref() == Some(transaction_id.as_str())
+                });
+            }
+
+            if let Some(signature) = query.signature {
+                logs.retain(|entry| {
+                    entry.transaction_signature.as_deref() == Some(signature.as_str())
+                });
+            }
+
+            if let Some(result) = query.result {
+                logs.retain(|entry| entry.result == result);
+            }
+
+            let offset = query.offset.unwrap_or(0);
+            let limit = query.limit.unwrap_or(100);
+            let filtered = logs
+                .into_iter()
+                .skip(offset)
+                .take(limit)
+                .collect::<Vec<_>>();
+
+            Json(filtered).into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to retrieve logs: {err}"),
+                block_id: None,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_logs_by_transaction_id(
+    State(state): State<AppState>,
+    Path(transaction_id): Path<String>,
+) -> impl IntoResponse {
+    match state.logger.get_logs() {
+        Ok(mut logs) => {
+            logs.retain(|entry| entry.transaction_id.as_deref() == Some(transaction_id.as_str()));
+            logs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+            Json(logs).into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to retrieve logs: {err}"),
+                block_id: None,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_logs_by_signature(
+    State(state): State<AppState>,
+    Path(signature): Path<String>,
+) -> impl IntoResponse {
+    match state.logger.get_logs() {
+        Ok(mut logs) => {
+            logs.retain(|entry| entry.transaction_signature.as_deref() == Some(signature.as_str()));
+            logs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+            Json(logs).into_response()
+        }
         Err(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
@@ -462,8 +558,13 @@ pub fn build_app(
         .route("/", get(hello))
         .route("/simulate", post(simulate))
         .route("/logs", get(get_logs))
+        .route("/logs/tx/:transaction_id", get(get_logs_by_transaction_id))
+        .route("/logs/signature/:signature", get(get_logs_by_signature))
         .route("/pending", get(get_pending))
-        .route("/policy", post(update_policy))
+        .route(
+            "/policy",
+            get(get_policy).post(update_policy).put(update_policy),
+        )
         .route("/override", post(override_block))
         .nest_service("/dashboard", ServeDir::new("static"))
         .with_state(app_state)

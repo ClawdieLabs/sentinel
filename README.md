@@ -69,6 +69,27 @@ Submit a base64-encoded transaction for validation.
 Manual approval/rejection via the dashboard.
 - **Payload:** `{ "block_id": "uuid", "action": "ALLOW|REJECT" }`
 
+### `GET /logs`
+Fetch persisted audit entries from sled with optional filters.
+- Query params:
+  - `result=ALLOWED|BLOCKED`
+  - `transaction_id=<hash>`
+  - `signature=<tx_signature>`
+  - `offset=<n>` and `limit=<n>` (default limit `100`)
+
+### `GET /logs/tx/{transaction_id}`
+Fetch audit entries for a specific transaction hash.
+
+### `GET /logs/signature/{signature}`
+Fetch audit entries for a specific Solana signature.
+
+### `GET /policy`
+Return the current dynamic allowlist policy.
+
+### `PUT /policy` (or `POST /policy`)
+Update `allowed_programs` at runtime.
+- **Payload:** `{ "allowed_programs": ["program_id_1", "program_id_2"] }`
+
 ## 📊 Dashboard
 The Sentinel dashboard is available at `http://localhost:3000/dashboard`. 
 It provides a live feed of agent activity and an interface for resolving pending security alerts.
