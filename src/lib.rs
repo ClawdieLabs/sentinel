@@ -560,10 +560,17 @@ pub fn build_app(
         .route("/logs", get(get_logs))
         .route("/logs/tx/:transaction_id", get(get_logs_by_transaction_id))
         .route("/logs/signature/:signature", get(get_logs_by_signature))
+        .route("/audit/logs", get(get_logs))
+        .route("/audit/logs/tx/:transaction_id", get(get_logs_by_transaction_id))
+        .route("/audit/logs/signature/:signature", get(get_logs_by_signature))
         .route("/pending", get(get_pending))
         .route(
             "/policy",
             get(get_policy).post(update_policy).put(update_policy),
+        )
+        .route(
+            "/policy/allowed-programs",
+            post(update_policy).put(update_policy),
         )
         .route("/override", post(override_block))
         .nest_service("/dashboard", ServeDir::new("static"))

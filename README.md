@@ -83,12 +83,24 @@ Fetch audit entries for a specific transaction hash.
 ### `GET /logs/signature/{signature}`
 Fetch audit entries for a specific Solana signature.
 
+### `GET /audit/logs`
+Detailed audit alias for `GET /logs` with the same query support.
+
+### `GET /audit/logs/tx/{transaction_id}`
+Detailed audit alias for `GET /logs/tx/{transaction_id}`.
+
+### `GET /audit/logs/signature/{signature}`
+Detailed audit alias for `GET /logs/signature/{signature}`.
+
 ### `GET /policy`
 Return the current dynamic allowlist policy.
 
 ### `PUT /policy` (or `POST /policy`)
 Update `allowed_programs` at runtime.
 - **Payload:** `{ "allowed_programs": ["program_id_1", "program_id_2"] }`
+
+### `PUT /policy/allowed-programs` (or `POST /policy/allowed-programs`)
+Detailed policy alias for updating `allowed_programs` at runtime.
 
 ## 📊 Dashboard
 The Sentinel dashboard is available at `http://localhost:3000/dashboard`. 

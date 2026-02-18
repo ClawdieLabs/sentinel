@@ -386,6 +386,35 @@ async fn policy_get_and_put_endpoints_return_updated_allowlist() {
 }
 
 #[tokio::test]
+async fn policy_allowed_programs_endpoint_updates_allowlist() {
+    let transfer_id = system_program::id();
+    let stake_id = stake::program::id();
+    let (app, _tmp_dir) = test_app(vec![transfer_id.to_string()]);
+
+    let update_response = app
+        .clone()
+        .oneshot(json_request_with_method(
+            "PUT",
+            "/policy/allowed-programs",
+            serde_json::json!({
+                "allowed_programs": [transfer_id.to_string(), stake_id.to_string()]
+            }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(update_response.status(), StatusCode::OK);
+
+    let stake_tx_response = app
+        .oneshot(json_request(
+            "/simulate",
+            serde_json::json!({ "transaction": encoded_transaction(stake_id) }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(stake_tx_response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn simulate_logs_allowed_and_blocked_transactions() {
     let transfer_id = system_program::id();
     let (app, _tmp_dir) = test_app(vec![transfer_id.to_string()]);
@@ -1036,6 +1065,101 @@ async fn logs_lookup_endpoints_find_entries_by_transaction_id_and_signature() {
             Request::builder()
                 .method("GET")
                 .uri(format!("/logs/signature/{tx_signature}"))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(by_signature.status(), StatusCode::OK);
+    let by_signature_body = to_bytes(by_signature.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let signature_logs: Vec<AuditEntry> = serde_json::from_slice(&by_signature_body).expect("logs");
+    assert!(!signature_logs.is_empty());
+    assert!(
+        signature_logs
+            .iter()
+            .all(|entry| { entry.transaction_signature.as_deref() == Some(tx_signature.as_str()) })
+    );
+}
+
+#[tokio::test]
+async fn audit_logs_alias_endpoints_find_entries_by_transaction_id_and_signature() {
+    let transfer_id = system_program::id();
+    let (app, _tmp_dir) = test_app(vec![transfer_id.to_string()]);
+    let tx_b64 = encoded_transaction(transfer_id);
+    let tx_bytes = base64::engine::general_purpose::STANDARD
+        .decode(tx_b64.as_bytes())
+        .expect("decode base64");
+    let tx: Transaction = bincode::deserialize(&tx_bytes).expect("deserialize tx");
+    let tx_signature = tx.signatures.first().expect("signature").to_string();
+    let tx_id = tx_signature.clone();
+
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "/simulate",
+            serde_json::json!({
+                "transaction": tx_b64,
+                "intent": "alias lookup test"
+            }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let filtered_logs_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/audit/logs?result=ALLOWED&limit=1")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(filtered_logs_response.status(), StatusCode::OK);
+    let filtered_logs_body = to_bytes(filtered_logs_response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let filtered_logs: Vec<AuditEntry> =
+        serde_json::from_slice(&filtered_logs_body).expect("logs");
+    assert_eq!(filtered_logs.len(), 1);
+    assert!(
+        filtered_logs
+            .iter()
+            .all(|entry| matches!(entry.decision, Decision::Allowed))
+    );
+
+    let by_tx_id = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/audit/logs/tx/{tx_id}"))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(by_tx_id.status(), StatusCode::OK);
+    let by_tx_id_body = to_bytes(by_tx_id.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let tx_id_logs: Vec<AuditEntry> = serde_json::from_slice(&by_tx_id_body).expect("logs");
+    assert!(!tx_id_logs.is_empty());
+    assert!(
+        tx_id_logs
+            .iter()
+            .all(|entry| entry.transaction_id.as_deref() == Some(tx_id.as_str()))
+    );
+
+    let by_signature = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/audit/logs/signature/{tx_signature}"))
                 .body(Body::empty())
                 .expect("request"),
         )
