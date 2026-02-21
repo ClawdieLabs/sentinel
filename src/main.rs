@@ -1,6 +1,6 @@
 use sentinel::{
+    audit::AuditLogger,
     build_app,
-    logger::AuditLogger,
     policy::Policy,
     simulation::{HeliusSimulator, Simulate},
 };

@@ -12,11 +12,12 @@ use tokio::sync::RwLock;
 use tower_http::services::ServeDir;
 use uuid::Uuid;
 
+pub mod audit;
 pub mod logger;
 pub mod policy;
 pub mod simulation;
 
-use logger::{
+use audit::{
     AuditEntry, AuditLogger, AuditResult, Decision, TransactionDetails, current_timestamp,
     hash_transaction_payload,
 };
