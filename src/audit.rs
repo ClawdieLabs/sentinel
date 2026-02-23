@@ -154,6 +154,57 @@ impl AuditLogger {
         }
         Ok(logs)
     }
+
+    pub fn get_logs_filtered(
+        &self,
+        transaction_id: Option<&str>,
+        signature: Option<&str>,
+        result: Option<AuditResult>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<AuditEntry>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut logs = Vec::new();
+        for item in self.db.iter() {
+            let (_key, value) = item.map_err(|e| anyhow!("Sled iteration error: {}", e))?;
+            let entry: AuditEntry = serde_json::from_slice(&value)
+                .map_err(|e| anyhow!("Failed to deserialize audit entry: {}", e))?;
+
+            if let Some(transaction_id) = transaction_id {
+                if entry.transaction_id.as_deref() != Some(transaction_id) {
+                    continue;
+                }
+            }
+
+            if let Some(signature) = signature {
+                if entry.transaction_signature.as_deref() != Some(signature) {
+                    continue;
+                }
+            }
+
+            if let Some(result) = result {
+                if entry.result != result {
+                    continue;
+                }
+            }
+
+            logs.push(entry);
+        }
+
+        logs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        Ok(logs.into_iter().skip(offset).take(limit).collect())
+    }
+
+    pub fn get_logs_by_transaction_id(&self, transaction_id: &str) -> Result<Vec<AuditEntry>> {
+        self.get_logs_filtered(Some(transaction_id), None, None, 0, usize::MAX)
+    }
+
+    pub fn get_logs_by_signature(&self, signature: &str) -> Result<Vec<AuditEntry>> {
+        self.get_logs_filtered(None, Some(signature), None, 0, usize::MAX)
+    }
 }
 
 pub fn current_timestamp() -> u64 {
@@ -161,4 +212,77 @@ pub fn current_timestamp() -> u64 {
         .duration_since(UNIX_EPOCH)
         .expect("Time went backwards")
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AuditEntry, AuditLogger, AuditResult, Decision};
+    use tempfile::TempDir;
+
+    fn make_entry(
+        timestamp: u64,
+        transaction_id: Option<&str>,
+        signature: Option<&str>,
+        result: AuditResult,
+    ) -> AuditEntry {
+        let decision = match result {
+            AuditResult::Allowed => Decision::Allowed,
+            AuditResult::Blocked => Decision::Blocked("blocked".to_string()),
+        };
+
+        AuditEntry {
+            timestamp,
+            transaction_id: transaction_id.map(str::to_string),
+            transaction_signature: signature.map(str::to_string),
+            decision,
+            simulation_result: None,
+            intent: None,
+            result,
+            reasoning: String::new(),
+            simulation_logs: vec![],
+            transaction_details: None,
+        }
+    }
+
+    #[test]
+    fn filtered_queries_return_expected_logs() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let db_path = temp_dir.path().join("audit.sled");
+        let logger = AuditLogger::new(db_path).expect("logger");
+
+        logger
+            .log(make_entry(1, Some("tx-a"), Some("sig-a"), AuditResult::Allowed))
+            .expect("log");
+        logger
+            .log(make_entry(2, Some("tx-b"), Some("sig-b"), AuditResult::Blocked))
+            .expect("log");
+        logger
+            .log(make_entry(3, Some("tx-c"), Some("sig-c"), AuditResult::Allowed))
+            .expect("log");
+
+        let by_tx = logger
+            .get_logs_by_transaction_id("tx-b")
+            .expect("query by tx id");
+        assert_eq!(by_tx.len(), 1);
+        assert_eq!(by_tx[0].transaction_id.as_deref(), Some("tx-b"));
+
+        let by_sig = logger
+            .get_logs_by_signature("sig-c")
+            .expect("query by signature");
+        assert_eq!(by_sig.len(), 1);
+        assert_eq!(by_sig[0].transaction_signature.as_deref(), Some("sig-c"));
+
+        let allowed = logger
+            .get_logs_filtered(None, None, Some(AuditResult::Allowed), 0, 10)
+            .expect("query allowed");
+        assert_eq!(allowed.len(), 2);
+        assert!(allowed.iter().all(|entry| entry.result == AuditResult::Allowed));
+        assert!(allowed[0].timestamp >= allowed[1].timestamp);
+
+        let paginated = logger
+            .get_logs_filtered(None, None, None, 1, 1)
+            .expect("paginated query");
+        assert_eq!(paginated.len(), 1);
+        assert_eq!(paginated[0].timestamp, 2);
+    }
 }

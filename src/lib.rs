@@ -387,36 +387,25 @@ async fn get_logs(
     State(state): State<AppState>,
     Query(query): Query<LogsQuery>,
 ) -> impl IntoResponse {
-    match state.logger.get_logs() {
-        Ok(mut logs) => {
-            logs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    let LogsQuery {
+        limit,
+        offset,
+        transaction_id,
+        signature,
+        result,
+    } = query;
 
-            if let Some(transaction_id) = query.transaction_id {
-                logs.retain(|entry| {
-                    entry.transaction_id.as_deref() == Some(transaction_id.as_str())
-                });
-            }
+    let offset = offset.unwrap_or(0);
+    let limit = limit.unwrap_or(100);
 
-            if let Some(signature) = query.signature {
-                logs.retain(|entry| {
-                    entry.transaction_signature.as_deref() == Some(signature.as_str())
-                });
-            }
-
-            if let Some(result) = query.result {
-                logs.retain(|entry| entry.result == result);
-            }
-
-            let offset = query.offset.unwrap_or(0);
-            let limit = query.limit.unwrap_or(100);
-            let filtered = logs
-                .into_iter()
-                .skip(offset)
-                .take(limit)
-                .collect::<Vec<_>>();
-
-            Json(filtered).into_response()
-        }
+    match state.logger.get_logs_filtered(
+        transaction_id.as_deref(),
+        signature.as_deref(),
+        result,
+        offset,
+        limit,
+    ) {
+        Ok(logs) => Json(logs).into_response(),
         Err(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
@@ -432,12 +421,8 @@ async fn get_logs_by_transaction_id(
     State(state): State<AppState>,
     Path(transaction_id): Path<String>,
 ) -> impl IntoResponse {
-    match state.logger.get_logs() {
-        Ok(mut logs) => {
-            logs.retain(|entry| entry.transaction_id.as_deref() == Some(transaction_id.as_str()));
-            logs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-            Json(logs).into_response()
-        }
+    match state.logger.get_logs_by_transaction_id(&transaction_id) {
+        Ok(logs) => Json(logs).into_response(),
         Err(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
@@ -453,12 +438,8 @@ async fn get_logs_by_signature(
     State(state): State<AppState>,
     Path(signature): Path<String>,
 ) -> impl IntoResponse {
-    match state.logger.get_logs() {
-        Ok(mut logs) => {
-            logs.retain(|entry| entry.transaction_signature.as_deref() == Some(signature.as_str()));
-            logs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-            Json(logs).into_response()
-        }
+    match state.logger.get_logs_by_signature(&signature) {
+        Ok(logs) => Json(logs).into_response(),
         Err(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
