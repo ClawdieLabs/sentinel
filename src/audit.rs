@@ -205,6 +205,125 @@ impl AuditLogger {
     pub fn get_logs_by_signature(&self, signature: &str) -> Result<Vec<AuditEntry>> {
         self.get_logs_filtered(None, Some(signature), None, 0, usize::MAX)
     }
+
+    /// Return total count of entries (optionally filtered by result).
+    pub fn count(&self, filter_result: Option<AuditResult>) -> Result<AuditStats> {
+        let mut total: u64 = 0;
+        let mut allowed: u64 = 0;
+        let mut blocked: u64 = 0;
+
+        for item in self.db.iter() {
+            let (_key, value) = item.map_err(|e| anyhow!("Sled iteration error: {}", e))?;
+            let entry: AuditEntry = serde_json::from_slice(&value)
+                .map_err(|e| anyhow!("Failed to deserialize audit entry: {}", e))?;
+
+            match entry.result {
+                AuditResult::Allowed => allowed += 1,
+                AuditResult::Blocked => blocked += 1,
+            }
+            total += 1;
+        }
+
+        if let Some(filter) = filter_result {
+            match filter {
+                AuditResult::Allowed => Ok(AuditStats {
+                    total: allowed,
+                    allowed,
+                    blocked: 0,
+                }),
+                AuditResult::Blocked => Ok(AuditStats {
+                    total: blocked,
+                    allowed: 0,
+                    blocked,
+                }),
+            }
+        } else {
+            Ok(AuditStats {
+                total,
+                allowed,
+                blocked,
+            })
+        }
+    }
+
+    /// Count entries matching the given filter criteria (for pagination metadata).
+    pub fn count_filtered(
+        &self,
+        transaction_id: Option<&str>,
+        signature: Option<&str>,
+        result: Option<AuditResult>,
+    ) -> Result<usize> {
+        let mut count = 0usize;
+        for item in self.db.iter() {
+            let (_key, value) = item.map_err(|e| anyhow!("Sled iteration error: {}", e))?;
+            let entry: AuditEntry = serde_json::from_slice(&value)
+                .map_err(|e| anyhow!("Failed to deserialize audit entry: {}", e))?;
+
+            if let Some(tid) = transaction_id {
+                if entry.transaction_id.as_deref() != Some(tid) {
+                    continue;
+                }
+            }
+            if let Some(sig) = signature {
+                if entry.transaction_signature.as_deref() != Some(sig) {
+                    continue;
+                }
+            }
+            if let Some(r) = result {
+                if entry.result != r {
+                    continue;
+                }
+            }
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    /// Delete a single audit entry by its sled key id.
+    pub fn delete_by_id(&self, id: u64) -> Result<bool> {
+        let key = id.to_be_bytes();
+        let removed = self
+            .db
+            .remove(key)
+            .map_err(|e| anyhow!("Failed to remove from sled: {}", e))?;
+        self.db
+            .flush()
+            .map_err(|e| anyhow!("Failed to flush sled: {}", e))?;
+        Ok(removed.is_some())
+    }
+
+    /// Clear all audit entries. Returns the number of entries removed.
+    pub fn clear(&self) -> Result<u64> {
+        let mut count = 0u64;
+        for item in self.db.iter() {
+            let (key, _value) = item.map_err(|e| anyhow!("Sled iteration error: {}", e))?;
+            self.db
+                .remove(key)
+                .map_err(|e| anyhow!("Failed to remove from sled: {}", e))?;
+            count += 1;
+        }
+        self.db
+            .flush()
+            .map_err(|e| anyhow!("Failed to flush sled: {}", e))?;
+        Ok(count)
+    }
+
+    /// Check if the database is healthy (can be read).
+    pub fn is_healthy(&self) -> bool {
+        self.db.iter().next().is_some() || self.db.is_empty()
+    }
+
+    /// Return the underlying sled DB size on disk in bytes.
+    pub fn size_on_disk(&self) -> u64 {
+        self.db.size_on_disk().unwrap_or(0)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditStats {
+    pub total: u64,
+    pub allowed: u64,
+    pub blocked: u64,
 }
 
 pub fn current_timestamp() -> u64 {

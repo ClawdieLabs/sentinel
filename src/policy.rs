@@ -1,11 +1,11 @@
 use crate::simulation::SimulationResult;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use solana_sdk::transaction::Transaction;
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Policy {
     #[serde(default)]
     pub max_sol_per_tx: Option<u64>,
@@ -192,5 +192,39 @@ impl PolicyEngine {
 
     pub fn max_balance_drain_lamports(&self) -> Option<u64> {
         self.policy.max_balance_drain_lamports
+    }
+
+    pub fn policy_snapshot(&self) -> Policy {
+        self.policy.clone()
+    }
+
+    pub fn update_policy(
+        &mut self,
+        max_sol_per_tx: Option<u64>,
+        max_balance_drain_lamports: Option<u64>,
+        rate_limit_per_minute: Option<u32>,
+        allowed_programs: Option<Vec<String>>,
+        blocked_addresses: Option<Vec<String>>,
+        simulation_checks_enabled: Option<bool>,
+    ) {
+        if let Some(v) = max_sol_per_tx {
+            self.policy.max_sol_per_tx = Some(v);
+        }
+        if let Some(v) = max_balance_drain_lamports {
+            self.policy.max_balance_drain_lamports = Some(v);
+        }
+        if let Some(v) = rate_limit_per_minute {
+            self.policy.rate_limit_per_minute = Some(v);
+            self.rate_limiter = Some(Arc::new(Mutex::new(RateLimiter::new(v))));
+        }
+        if let Some(v) = allowed_programs {
+            self.policy.allowed_programs = v;
+        }
+        if let Some(v) = blocked_addresses {
+            self.policy.blocked_addresses = v;
+        }
+        if let Some(v) = simulation_checks_enabled {
+            self.policy.simulation_checks_enabled = v;
+        }
     }
 }
